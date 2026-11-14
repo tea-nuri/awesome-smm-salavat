@@ -62,7 +62,7 @@ const state = ref(null),
   companyModal = ref(false),
   companyMenu = ref(false);
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
-const schedule = ref({ request: "", next_run: "", every_minutes: 0 });
+const schedule = ref({ request: "", next_run: "", every_seconds: 0 });
 let poll, toastTimer;
 const headers = () => ({
   "Content-Type": "application/json",
@@ -236,9 +236,9 @@ async function addSchedule() {
       company_id: current.value,
       ...schedule.value,
       next_run: new Date(schedule.value.next_run).toISOString(),
-      every_minutes: Number(schedule.value.every_minutes),
+      every_seconds: Number(schedule.value.every_seconds),
     });
-    schedule.value = { request: "", next_run: "", every_minutes: 0 };
+    schedule.value = { request: "", next_run: "", every_seconds: 0 };
     notify("Задача запланирована");
     await refresh();
   });
@@ -820,12 +820,14 @@ const nav = [
                   v-model="schedule.next_run"
                   required /></label
               ><label
-                >Повторять<select v-model="schedule.every_minutes">
+                >Повторять<select v-model="schedule.every_seconds">
                   <option :value="0">Один раз</option>
-                  <option :value="5">Каждые 5 минут — для демонстрации</option>
-                  <option :value="60">Каждый час</option>
-                  <option :value="1440">Каждый день</option>
-                  <option :value="10080">Каждую неделю</option>
+                  <option :value="30">
+                    Каждые 30 секунд — для демонстрации
+                  </option>
+                  <option :value="3600">Каждый час</option>
+                  <option :value="86400">Каждый день</option>
+                  <option :value="604800">Каждую неделю</option>
                 </select></label
               >
               <p class="field-note">
@@ -858,8 +860,10 @@ const nav = [
                 <small
                   ><Clock3 :size="13" /> {{ fmt(s.next_run) }} ·
                   {{
-                    s.every_minutes
-                      ? `каждые ${s.every_minutes} мин.`
+                    s.every_seconds || s.every_minutes
+                      ? s.every_seconds
+                        ? `каждые ${s.every_seconds} сек.`
+                        : `каждые ${s.every_minutes} мин.`
                       : "однократно"
                   }}</small
                 >

@@ -54,6 +54,7 @@ type Post struct {
 	UserID           int64      `json:"user_id"`
 	ChatID           int64      `json:"chat_id"`
 	Attempts         int        `json:"attempts"`
+	ScheduleID       string     `json:"schedule_id,omitempty"`
 }
 type Message struct {
 	Role string    `json:"role"`
@@ -86,6 +87,7 @@ type Schedule struct {
 	Enabled      bool      `json:"enabled"`
 	UserID       int64     `json:"user_id"`
 	ChatID       int64     `json:"chat_id"`
+	EverySeconds int       `json:"every_seconds"`
 }
 type State struct {
 	Companies map[string]*Company  `json:"companies"`
@@ -563,7 +565,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "schedules" && r.Method == "POST" {
 		var s Schedule
-		if decode(r, &s) != nil || s.NextRun.Before(now()) || s.Request == "" || s.EveryMinutes < 0 {
+		if decode(r, &s) != nil || s.NextRun.Before(now()) || s.Request == "" || s.EveryMinutes < 0 || s.EveryMinutes > 525600 || s.EverySeconds < 0 || s.EverySeconds > 31536000 || (s.EverySeconds > 0 && s.EverySeconds < 30) || len(s.Request) > 12000 {
 			fail(w, 400, "Укажите задачу и будущее время запуска")
 			return
 		}
@@ -579,6 +581,27 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		a.event(s.CompanyID, "Создана задача по расписанию", "schedule")
 		a.persist()
 		reply(w, 201, s)
+		return
+	}
+	if strings.HasPrefix(path, "schedules/") && r.Method == "PUT" {
+		sid := strings.TrimPrefix(path, "schedules/")
+		old := a.state.Schedules[sid]
+		if old == nil || !a.allowed(u, a.state.Companies[old.CompanyID]) {
+			fail(w, 404, "Не найдено")
+			return
+		}
+		var in Schedule
+		if decode(r, &in) != nil || in.NextRun.Before(now()) || in.EverySeconds < 0 || in.EverySeconds > 31536000 || (in.EverySeconds > 0 && in.EverySeconds < 30) {
+			fail(w, 400, "Минимальный интервал — 30 секунд")
+			return
+		}
+		old.NextRun = in.NextRun
+		old.EverySeconds = in.EverySeconds
+		old.EveryMinutes = 0
+		old.Enabled = in.Enabled
+		a.event(old.CompanyID, "Обновлено расписание: интервал "+strconv.Itoa(in.EverySeconds)+" сек.", "schedule")
+		a.persist()
+		reply(w, 200, old)
 		return
 	}
 	if strings.HasPrefix(path, "schedules/") && r.Method == "DELETE" {
@@ -983,10 +1006,27 @@ func (a *App) tick() {
 	t := now()
 	for _, s := range a.state.Schedules {
 		if s.Enabled && !s.NextRun.After(t) {
-			a.newPost(s.CompanyID, s.Request, s.UserID, s.ChatID, nil)
+			interval := s.EverySeconds
+			if interval == 0 {
+				interval = s.EveryMinutes * 60
+			}
+			inFlight := false
+			for _, p := range a.state.Posts {
+				if p.ScheduleID == s.ID && (p.Status == "working" || p.Status == "generating") {
+					inFlight = true
+					break
+				}
+			}
+			if inFlight {
+				s.NextRun = t.Add(time.Duration(max(interval, 30)) * time.Second)
+				changed = true
+				continue
+			}
+			p := a.newPost(s.CompanyID, s.Request, s.UserID, s.ChatID, nil)
+			p.ScheduleID = s.ID
 			a.event(s.CompanyID, "Автономный запуск задачи по расписанию", "schedule")
-			if s.EveryMinutes > 0 {
-				s.NextRun = t.Add(time.Duration(s.EveryMinutes) * time.Minute)
+			if interval > 0 {
+				s.NextRun = t.Add(time.Duration(interval) * time.Second)
 			} else {
 				s.Enabled = false
 			}

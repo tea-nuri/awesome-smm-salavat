@@ -144,3 +144,34 @@ func TestLocalAuthNeverExposedThroughTunnel(t *testing.T) {
 		t.Fatal("loopback rejected")
 	}
 }
+
+func TestThirtySecondSchedule(t *testing.T) {
+	a := testApp(t)
+	a.state.Schedules["demo"] = &Schedule{ID: "demo", CompanyID: "a", Request: "demo", EverySeconds: 30, Enabled: true, NextRun: now().Add(-time.Second), UserID: 1, ChatID: 1}
+	before := now()
+	a.tick()
+	s := a.state.Schedules["demo"]
+	delta := s.NextRun.Sub(before)
+	if delta < 29*time.Second || delta > 31*time.Second {
+		t.Fatalf("expected 30-second interval, got %v", delta)
+	}
+	if !s.Enabled || len(a.state.Posts) != 1 {
+		t.Fatal("recurring schedule did not create exactly one task")
+	}
+	for _, p := range a.state.Posts {
+		if p.ScheduleID != "demo" {
+			t.Fatal("schedule link missing")
+		}
+	}
+}
+func TestThirtySecondScheduleDoesNotAccumulateGenerationBacklog(t *testing.T) {
+	a := testApp(t)
+	p := a.newPost("a", "existing", 1, 1, nil)
+	p.ScheduleID = "demo"
+	p.Status = "working"
+	a.state.Schedules["demo"] = &Schedule{ID: "demo", CompanyID: "a", Request: "demo", EverySeconds: 30, Enabled: true, NextRun: now().Add(-time.Second), UserID: 1, ChatID: 1}
+	a.tick()
+	if len(a.state.Posts) != 1 {
+		t.Fatal("created duplicate while previous generation is still running")
+	}
+}
