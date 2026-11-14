@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -173,5 +174,46 @@ func TestThirtySecondScheduleDoesNotAccumulateGenerationBacklog(t *testing.T) {
 	a.tick()
 	if len(a.state.Posts) != 1 {
 		t.Fatal("created duplicate while previous generation is still running")
+	}
+}
+
+func TestTelegramRevisionIsIdempotentAfterLostResponse(t *testing.T) {
+	a := testApp(t)
+	a.internal = "test-internal"
+	p := a.newPost("a", "draft", 1, 1, nil)
+	p.Status = "review"
+	body := fmt.Sprintf(`{"user_id":1,"post_id":%q,"revision":1,"action":"revise","comment":"Shorter","update_id":123}`, p.ID)
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest("POST", "/internal/action", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer test-internal")
+		w := httptest.NewRecorder()
+		a.internalAPI(w, r)
+		if w.Code != 200 {
+			t.Fatalf("attempt %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	if p.Revision != 2 || strings.Count(p.Request, "Shorter") != 1 {
+		t.Fatal("same Telegram update applied twice")
+	}
+}
+func TestPauseStopsScheduledGeneration(t *testing.T) {
+	a := testApp(t)
+	a.localToken = "local-test"
+	p := a.newPost("a", "scheduled", 1, 1, nil)
+	p.Status = "working"
+	p.ScheduleID = "demo"
+	a.state.Schedules["demo"] = &Schedule{ID: "demo", CompanyID: "a", EverySeconds: 30, Enabled: true}
+	body := fmt.Sprintf(`{"enabled":false,"every_seconds":30,"next_run":%q}`, now().Add(time.Minute).Format(time.RFC3339))
+	r := httptest.NewRequest("PUT", "http://localhost/api/schedules/demo", strings.NewReader(body))
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("X-Local-Token", a.localToken)
+	w := httptest.NewRecorder()
+	a.api(w, r)
+	if w.Code != 200 || a.state.Schedules["demo"].Enabled || p.Status != "cancelled" {
+		t.Fatalf("pause failed: %d %s %s", w.Code, w.Body.String(), p.Status)
+	}
+	a.tick()
+	if len(a.state.Posts) != 1 {
+		t.Fatal("paused schedule created more tasks")
 	}
 }

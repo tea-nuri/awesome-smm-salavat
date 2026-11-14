@@ -21,4 +21,5 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m py_compile bot/main.py bot/render_card.py
+      - run: python -m unittest discover -s bot -p "test_*.py"
       - run: APP_ENV_FILE=.env.example docker compose --env-file .env.example config --quiet

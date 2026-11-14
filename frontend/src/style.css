@@ -1775,3 +1775,60 @@ footer > span:last-child {
     transition-duration: 0.01ms !important;
   }
 }
+
+.automation-banner {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 17px 20px;
+  background: #f0ebfc;
+  border: 1px solid #e1d7f8;
+  border-radius: 12px;
+  margin-top: 18px;
+}
+.automation-banner > div {
+  flex: 1;
+}
+.automation-banner b {
+  font-size: 12px;
+  color: #755894;
+}
+.automation-banner p {
+  font-size: 10px;
+  line-height: 1.7;
+  color: #a08cb1;
+  margin-top: 5px;
+}
+.schedule-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.schedule-controls .button {
+  min-height: 30px;
+  font-size: 10px;
+  padding: 7px 11px;
+}
+@media (max-width: 620px) {
+  .automation-banner {
+    padding: 14px 12px;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .automation-banner .mini-icon {
+    display: none;
+  }
+  .automation-banner .button {
+    font-size: 9px;
+    padding: 9px;
+  }
+  .automation-banner b {
+    font-size: 11px;
+  }
+  .automation-banner p {
+    font-size: 9px;
+  }
+  .schedule-controls .button {
+    font-size: 10px;
+  }
+}

@@ -164,6 +164,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		http.ServeFile(w, r, filepath.Join(a.front, "index.html"))
 	})
 	addr := env("LISTEN_ADDR", "127.0.0.1:8080")
@@ -599,6 +600,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		old.EverySeconds = in.EverySeconds
 		old.EveryMinutes = 0
 		old.Enabled = in.Enabled
+		if !in.Enabled {
+			for _, p := range a.state.Posts {
+				if p.ScheduleID == sid && (p.Status == "generating" || p.Status == "working") {
+					p.Status = "cancelled"
+					p.UpdatedAt = now()
+				}
+			}
+		}
 		a.event(old.CompanyID, "Обновлено расписание: интервал "+strconv.Itoa(in.EverySeconds)+" сек.", "schedule")
 		a.persist()
 		reply(w, 200, old)
@@ -878,6 +887,7 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 	if path == "action" && r.Method == "POST" {
 		var in struct {
 			UserID   int64  `json:"user_id"`
+			UpdateID int64  `json:"update_id"`
 			PostID   string `json:"post_id"`
 			Action   string `json:"action"`
 			Revision int    `json:"revision"`
@@ -887,10 +897,26 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "Bad request")
 			return
 		}
+		key := ""
+		if in.UpdateID != 0 {
+			key = "action:" + strconv.FormatInt(in.UserID, 10) + ":" + strconv.FormatInt(in.UpdateID, 10)
+		}
+		if key != "" && a.state.Updates[key] {
+			p := a.state.Posts[in.PostID]
+			if p == nil || !a.allowed(a.user(in.UserID), a.state.Companies[p.CompanyID]) {
+				fail(w, 404, "Не найдено")
+				return
+			}
+			reply(w, 200, p)
+			return
+		}
 		p, e := a.action(a.user(in.UserID), in.PostID, in.Action, in.Revision, in.Comment, "", "")
 		if e != nil {
 			fail(w, 409, e.Error())
 			return
+		}
+		if key != "" {
+			a.state.Updates[key] = true
 		}
 		a.persist()
 		reply(w, 200, p)

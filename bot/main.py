@@ -27,6 +27,10 @@ def save():
         p.replace(DATA / "state.json")
 
 
+class TransportError(RuntimeError):
+    """Delivery outcome is unknown; never reinterpret it as a rejected action."""
+
+
 def request(url, data=None, headers=None, timeout=40):
     req = urllib.request.Request(url, data=data, headers=headers or {})
     try:
@@ -40,7 +44,7 @@ def request(url, data=None, headers=None, timeout=40):
             msg = f"HTTP {e.code}"
         raise RuntimeError(msg) from None
     except Exception as e:
-        raise RuntimeError(type(e).__name__) from None
+        raise TransportError("Временный сбой соединения") from None
 
 
 def tg(method, data=None):
@@ -48,6 +52,7 @@ def tg(method, data=None):
         "https://api.telegram.org/bot" + TOKEN + "/" + method,
         json.dumps(data or {}).encode(),
         {"Content-Type": "application/json"},
+        timeout=35 if method == "getUpdates" else 12,
     )
     if not result.get("ok"):
         raise RuntimeError(result.get("description", "Telegram error"))
@@ -55,11 +60,43 @@ def tg(method, data=None):
 
 
 def api(path, data=None):
-    return request(
-        BACKEND + "/internal/" + path,
-        None if data is None else json.dumps(data).encode(),
-        {"Content-Type": "application/json", "Authorization": "Bearer " + INTERNAL},
+    # Only retry operations with a deduplication key or without mutations.
+    retriable = (
+        path in {"revision-check", "publication-check", "config"}
+        or (path in {"action", "message"} and bool((data or {}).get("update_id")))
+        or path.startswith("outbox/")
     )
+    attempts = 3 if retriable else 1
+    for attempt in range(attempts):
+        try:
+            return request(
+                BACKEND + "/internal/" + path,
+                None if data is None else json.dumps(data).encode(),
+                {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + INTERNAL,
+                },
+            )
+        except TransportError:
+            if attempt == attempts - 1:
+                raise
+            STOP.wait(attempt + 1)
+
+
+def acknowledge(chat, text, markup=None):
+    try:
+        return send(chat, text, markup)
+    except Exception as exc:
+        # The backend has already accepted the action. An acknowledgement delivery
+        # failure must not be reported to the user as an action failure.
+        logging.warning("Acknowledgement delivery delayed: %s", type(exc).__name__)
+
+
+def answer_callback(query_id, text):
+    try:
+        return tg("answerCallbackQuery", {"callback_query_id": query_id, "text": text})
+    except Exception as exc:
+        logging.warning("Callback acknowledgement: %s", type(exc).__name__)
 
 
 def send(chat, text, markup=None):
@@ -124,11 +161,8 @@ def handle(update):
                     "update_id": update["update_id"],
                 },
             )
-            tg(
-                "answerCallbackQuery",
-                {"callback_query_id": q["id"], "text": "Компания выбрана"},
-            )
-            send(cid, result["reply"])
+            answer_callback(q["id"], "Компания выбрана")
+            acknowledge(cid, result["reply"])
             return
         pieces = data.split(":")
         if len(pieces) != 3:
@@ -144,27 +178,27 @@ def handle(update):
                 raise RuntimeError("Материал уже изменён или недоступен")
             STATE["revisions"][str(uid)] = {"post_id": pid, "revision": rev}
             save()
-            tg(
-                "answerCallbackQuery",
-                {"callback_query_id": q["id"], "text": "Напишите комментарий"},
-            )
-            send(
+            answer_callback(q["id"], "Напишите комментарий")
+            acknowledge(
                 cid,
                 "Что изменить в материале? Пришлите следующим сообщением. /cancel — отменить.",
             )
             return
         api(
             "action",
-            {"user_id": uid, "post_id": pid, "revision": rev, "action": action},
-        )
-        tg(
-            "answerCallbackQuery",
             {
-                "callback_query_id": q["id"],
-                "text": "Одобрено, отправляю в канал"
-                if action == "approve"
-                else "Материал отклонён",
+                "user_id": uid,
+                "post_id": pid,
+                "revision": rev,
+                "action": action,
+                "update_id": update["update_id"],
             },
+        )
+        answer_callback(
+            q["id"],
+            "Одобрено, отправляю в канал"
+            if action == "approve"
+            else "Материал отклонён",
         )
         try:
             tg(
@@ -187,14 +221,23 @@ def handle(update):
     if text == "/cancel":
         STATE["revisions"].pop(str(uid), None)
         save()
-        send(cid, "Доработка отменена.")
+        acknowledge(cid, "Доработка отменена.")
         return
     if str(uid) in STATE["revisions"] and text and not text.startswith("/"):
         pending = STATE["revisions"][str(uid)]
-        api("action", {"user_id": uid, **pending, "action": "revise", "comment": text})
+        api(
+            "action",
+            {
+                "user_id": uid,
+                **pending,
+                "action": "revise",
+                "comment": text,
+                "update_id": update["update_id"],
+            },
+        )
         STATE["revisions"].pop(str(uid), None)
         save()
-        send(
+        acknowledge(
             cid,
             "Принял правки. Подготовлю новую версию и снова пришлю на согласование.",
         )
@@ -203,7 +246,7 @@ def handle(update):
         doc = m["document"]
         name = doc.get("file_name", "")
         if doc.get("file_size", 0) > 5 * 1024 * 1024:
-            send(cid, "Для MVP загрузите файл до 5 МБ.")
+            acknowledge(cid, "Для MVP загрузите файл до 5 МБ.")
             return
         f = tg("getFile", {"file_id": doc["file_id"]})
         with urllib.request.urlopen(
@@ -221,13 +264,17 @@ def handle(update):
         elif name.lower().endswith((".txt", ".md")):
             text = content.decode("utf-8-sig", errors="replace")
         else:
-            send(cid, "Пришлите PDF, TXT или MD.")
+            acknowledge(cid, "Пришлите PDF, TXT или MD.")
             return
         if not text.strip():
-            send(cid, "Не удалось извлечь текст. Пришлите текстовый PDF или TXT.")
+            acknowledge(
+                cid, "Не удалось извлечь текст. Пришлите текстовый PDF или TXT."
+            )
             return
         api("knowledge", {"user_id": uid, "text": text[:45000], "filename": name})
-        send(cid, "Материал «" + name + "» добавлен в базу знаний выбранной компании.")
+        acknowledge(
+            cid, "Материал «" + name + "» добавлен в базу знаний выбранной компании."
+        )
         return
     if not text:
         return
@@ -249,7 +296,7 @@ def handle(update):
             ]
         }
     if result.get("reply"):
-        send(cid, result["reply"], markup)
+        acknowledge(cid, result["reply"], markup)
 
 
 def updates_loop():
@@ -264,6 +311,8 @@ def updates_loop():
                 },
             )
             for u in updates:
+                if STOP.is_set():
+                    break
                 try:
                     handle(u)
                 except Exception as e:

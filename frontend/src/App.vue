@@ -13,6 +13,8 @@ import {
   ArrowRight,
   Plus,
   Sparkles,
+  Pause,
+  Play,
   LayoutDashboard,
   Layers,
   CalendarClock,
@@ -136,6 +138,7 @@ const labels = {
   failed: "Ошибка",
   answered: "Ответ готов",
   uncertain: "Проверьте канал",
+  cancelled: "Отменено",
 };
 const fmt = (date) =>
   new Date(date).toLocaleString("ru-RU", {
@@ -241,6 +244,44 @@ async function addSchedule() {
     schedule.value = { request: "", next_run: "", every_seconds: 0 };
     notify("Задача запланирована");
     await refresh();
+  });
+}
+async function toggleSchedule(s, enabled = !s.enabled) {
+  await run(async () => {
+    const seconds = s.every_seconds || (s.every_minutes || 0) * 60;
+    await api(
+      "schedules/" + s.id,
+      {
+        enabled,
+        every_seconds: seconds,
+        next_run: new Date(
+          Date.now() + Math.max(seconds, 30) * 1000,
+        ).toISOString(),
+      },
+      "PUT",
+    );
+    await refresh();
+    notify(enabled ? "Автоподготовка включена" : "Автоподготовка на паузе");
+  });
+}
+async function pauseAllSchedules() {
+  await run(async () => {
+    for (const s of schedules.value.filter((s) => s.enabled)) {
+      const seconds = s.every_seconds || (s.every_minutes || 0) * 60;
+      await api(
+        "schedules/" + s.id,
+        {
+          enabled: false,
+          every_seconds: seconds,
+          next_run: new Date(
+            Date.now() + Math.max(seconds, 30) * 1000,
+          ).toISOString(),
+        },
+        "PUT",
+      );
+    }
+    await refresh();
+    notify("Автоподготовка остановлена");
   });
 }
 async function removeSchedule(s) {
@@ -469,6 +510,26 @@ const nav = [
                 ><Zap :size="14" /> Работает за вас</span
               ><span class="art-cross">✦</span>
             </div>
+          </section>
+          <section
+            v-if="schedules.some((s) => s.enabled)"
+            class="automation-banner"
+          >
+            <span class="mini-icon"><CalendarClock :size="19" /></span>
+            <div>
+              <b>Автоподготовка включена</b>
+              <p>
+                По расписанию AI создаёт новые материалы и присылает их на
+                согласование.
+              </p>
+            </div>
+            <button
+              class="button secondary"
+              :disabled="busy"
+              @click="pauseAllSchedules"
+            >
+              <Pause :size="15" /> Остановить
+            </button>
           </section>
           <section class="stats-grid">
             <div class="stat">
@@ -848,13 +909,32 @@ const nav = [
                   <span
                     class="status-badge"
                     :class="s.enabled ? 'approved' : 'answered'"
-                    >{{ s.enabled ? "Активно" : "Выполнено" }}</span><button
-                    class="icon-button"
-                    @click="removeSchedule(s)"
-                    title="Удалить расписание"
+                    >{{
+                      s.enabled
+                        ? "Активно"
+                        : s.every_seconds || s.every_minutes
+                          ? "На паузе"
+                          : "Выполнено"
+                    }}</span
                   >
-                    <X :size="16" />
-                  </button>
+                  <div class="schedule-controls">
+                    <button
+                      class="button secondary"
+                      :disabled="busy"
+                      @click="toggleSchedule(s)"
+                    >
+                      <Pause v-if="s.enabled" :size="14" /><Play
+                        v-else
+                        :size="14"
+                      />{{ s.enabled ? "Пауза" : "Включить" }}</button
+                    ><button
+                      class="icon-button"
+                      @click="removeSchedule(s)"
+                      title="Удалить расписание"
+                    >
+                      <X :size="16" />
+                    </button>
+                  </div>
                 </div>
                 <p>{{ s.request }}</p>
                 <small
