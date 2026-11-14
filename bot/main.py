@@ -16,6 +16,7 @@ DATA = Path(os.getenv("BOT_DATA_DIR", "data/bot"))
 DATA.mkdir(parents=True, exist_ok=True)
 STOP = threading.Event()
 STATE_LOCK = threading.RLock()
+EMOJI_BLOCKED_CHATS = set()
 
 
 def publication_time(value):
@@ -197,7 +198,50 @@ def text_entities(text, post, company):
     return sorted(entities, key=lambda e: (e["offset"], -e["length"]))
 
 
+class EmojiDeliveryError(RuntimeError):
+    """Telegram accepted the request but did not keep the requested custom emoji."""
+    def __init__(self, message, rollback_complete=True):
+        super().__init__(message)
+        self.rollback_complete = rollback_complete
+
+
+def rollback_messages(messages):
+    complete = True
+    for message in reversed(messages):
+        if not message.get("chat", {}).get("id") or not message.get("message_id"):
+            complete = False
+            continue
+        try:
+            if not tg("deleteMessage", {"chat_id": message["chat"]["id"], "message_id": message["message_id"]}):
+                complete = False
+        except Exception:
+            complete = False
+    return complete
+
+
+def verify_emoji_delivery(message, expected, strict, chat):
+    if not strict:
+        return
+    requested = {(e["offset"], e["length"], str(e["custom_emoji_id"])) for e in expected if e["type"] == "custom_emoji"}
+    actual = {(e["offset"], e["length"], str(e.get("custom_emoji_id", ""))) for e in message.get("caption_entities", message.get("entities", [])) if e["type"] == "custom_emoji"}
+    if requested.issubset(actual):
+        return
+    if message.get("chat", {}).get("type") == "channel":
+        EMOJI_BLOCKED_CHATS.update([str(chat), str(message["chat"]["id"])])
+        reason = "Telegram удалил эмодзи выбранного пака. Для эмодзи в канале этому боту нужен дополнительный username с Fragment; Premium владельца недостаточно."
+    else:
+        reason = "Telegram не сохранил эмодзи выбранного пака. Проверьте право бота отправлять custom emoji."
+    raise EmojiDeliveryError(reason, rollback_messages([message]))
+
+
+def check_emoji_destination(chat, company):
+    if company.get("emoji_source") == "pack" and str(chat) in EMOJI_BLOCKED_CHATS:
+        raise EmojiDeliveryError("Telegram не разрешает этому боту эмодзи из пака в канале. Нужен дополнительный username с Fragment или публикация через Premium-аккаунт.")
+
+
 def rich_send(chat, text, post, company):
+    check_emoji_destination(chat, company)
+    sent = []
     if company.get("emoji_source") == "pack": strict_pack_entities(text, company)
     # Never split a Unicode surrogate or truncate a long corporate post.
     chunks, current = [], ""
@@ -213,6 +257,12 @@ def rich_send(chat, text, post, company):
         data = {"chat_id": chat, "text": chunk, "entities": text_entities(chunk, post, company)}
         try:
             result = tg("sendMessage", data)
+            try:
+                verify_emoji_delivery(result, data["entities"], company.get("emoji_source") == "pack", chat)
+            except EmojiDeliveryError as error:
+                error.rollback_complete = rollback_messages(sent) and error.rollback_complete
+                raise
+            sent.append(result)
         except RuntimeError as exc:
             if company.get("emoji_source") == "pack" or isinstance(exc, TransportError) or not emoji_rejected(exc, data["entities"]):
                 raise
@@ -273,18 +323,25 @@ def photo(chat, name, caption, markup=None, entities=None, strict_emoji=False):
         return photo(chat, name, caption, markup, [e for e in entities if e["type"] != "custom_emoji"])
     if not res.get("ok"):
         raise RuntimeError(res.get("description", "Telegram error"))
-    return res["result"]
+    message = res["result"]
+    verify_emoji_delivery(message, entities or [], strict_emoji, chat)
+    return message
 
 
 def deliver_post(chat, post, company):
+    check_emoji_destination(chat, company)
     body = post["body"]
     entities = text_entities(body, post, company)  # Validate the whole post before any delivery.
     strict = company.get("emoji_source") == "pack"
     if utf16_len(body) <= 1000:
         return photo(chat, post["image"], body, entities=entities, strict_emoji=strict)
     hook = body.split("\n", 1)[0]
-    photo(chat, post["image"], hook, entities=text_entities(hook, post, company), strict_emoji=strict)
-    return rich_send(chat, body, post, company)
+    cover = photo(chat, post["image"], hook, entities=text_entities(hook, post, company), strict_emoji=strict)
+    try:
+        return rich_send(chat, body, post, company)
+    except EmojiDeliveryError as error:
+        error.rollback_complete = rollback_messages([cover]) and error.rollback_complete
+        raise
 
 
 def receive_photo(message, update_id):
@@ -717,6 +774,8 @@ def outbox_loop():
                         outcome.update(message_id=msg["message_id"])
                 outcome["ok"] = True
             except Exception as e:
+                if isinstance(e, EmojiDeliveryError):
+                    outcome["delivery_rejected"] = e.rollback_complete
                 outcome["error"] = str(e)[:250]
                 logging.warning("Outbox %s: %s", event["id"], str(e)[:150])
             # Never resend a publication when acknowledgement is uncertain.

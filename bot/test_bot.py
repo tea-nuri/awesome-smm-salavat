@@ -104,7 +104,7 @@ class BotDeliveryTest(unittest.TestCase):
     def test_rich_chunks_do_not_split_a_custom_emoji(self):
         company = {"emoji_source": "pack", "emoji_items": [{"emoji": "👩‍💻", "custom_emoji_id": "123"}]}
         text = "a" * 3898 + "👩‍💻" + "x"
-        with patch.object(bot, "tg", return_value={"message_id": 1}) as tg:
+        with patch.object(bot, "tg", side_effect=lambda method, payload: {"message_id": 1,"entities":payload["entities"]}) as tg:
             bot.rich_send(1, text, {}, company)
             payloads = [call.args[1] for call in tg.call_args_list]
             self.assertEqual("".join(item["text"] for item in payloads), text)
@@ -123,6 +123,38 @@ class BotDeliveryTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 bot.photo(1, "existing.png", "🍏 Фрукты", entities=[{"type": "custom_emoji", "offset": 0, "length": 2, "custom_emoji_id": "123"}], strict_emoji=True)
             request.assert_called_once()
+
+    def test_success_response_must_keep_exact_pack_entities(self):
+        expected=[{"type":"custom_emoji","offset":0,"length":2,"custom_emoji_id":"123"}]
+        bot.verify_emoji_delivery({"entities":expected},expected,True,1)
+        with patch.object(bot,"tg",return_value=True) as tg:
+            with self.assertRaises(bot.EmojiDeliveryError):
+                bot.verify_emoji_delivery({"message_id":9,"chat":{"id":-100,"type":"channel"},"entities":[]},expected,True,"@test")
+            tg.assert_called_once_with("deleteMessage",{"chat_id":-100,"message_id":9})
+        bot.EMOJI_BLOCKED_CHATS.clear()
+
+    def test_different_custom_emoji_is_not_accepted(self):
+        expected=[{"type":"custom_emoji","offset":0,"length":2,"custom_emoji_id":"123"}]
+        with patch.object(bot,"tg",return_value=True):
+            with self.assertRaises(bot.EmojiDeliveryError):
+                bot.verify_emoji_delivery({"message_id":9,"chat":{"id":1},"caption_entities":[{**expected[0],"custom_emoji_id":"999"}]},expected,True,1)
+
+    def test_failed_rollback_is_not_reported_as_safe_rejection(self):
+        expected=[{"type":"custom_emoji","offset":0,"length":2,"custom_emoji_id":"123"}]
+        with patch.object(bot,"tg",side_effect=bot.TransportError("offline")):
+            with self.assertRaises(bot.EmojiDeliveryError) as caught:
+                bot.verify_emoji_delivery({"message_id":9,"chat":{"id":1}},expected,True,1)
+        self.assertFalse(caught.exception.rollback_complete)
+
+    def test_known_unsupported_channel_is_rejected_before_sending(self):
+        bot.EMOJI_BLOCKED_CHATS.add("@test")
+        try:
+            with patch.object(bot,"photo") as photo:
+                with self.assertRaises(bot.EmojiDeliveryError):
+                    bot.deliver_post("@test",{"body":"🍏","image":"a.png"},{"emoji_source":"pack"})
+                photo.assert_not_called()
+        finally:
+            bot.EMOJI_BLOCKED_CHATS.clear()
 
     def test_explicit_custom_emoji_rejection_uses_standard_fallback(self):
         company = {"references": [{"text": "💎", "entities": [{"type": "custom_emoji", "offset": 0, "length": 2, "custom_emoji_id": "12345"}]}]}

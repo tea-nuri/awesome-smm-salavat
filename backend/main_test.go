@@ -100,6 +100,33 @@ func TestRestartPreservesStateAndDoesNotRetryUncertainPublication(t *testing.T) 
 		t.Fatal(e)
 	}
 }
+func TestEmojiDeliveryRejectionRequiresNewApproval(t *testing.T) {
+	for _, safe := range []bool{true, false} {
+		a := testApp(t)
+		p := a.newPost("a", "test", 1, 1, nil)
+		p.Status, p.ApprovedRevision = "publishing", p.Revision
+		p.Approvals = []Approval{{UserID: 1, Revision: p.Revision, At: now()}}
+		a.state.Outbox = []*Outbox{{ID: "delivery", Kind: "publish", PostID: p.ID}}
+		r := httptest.NewRequest("POST", "/internal/outbox/delivery", strings.NewReader(fmt.Sprintf(`{"ok":false,"delivery_rejected":%t,"error":"custom emoji missing"}`, safe)))
+		w := httptest.NewRecorder()
+		a.internalAPI(w, r)
+		if w.Code != 200 {
+			t.Fatalf("outcome rejected: %d", w.Code)
+		}
+		if safe && (p.Status != "review" || p.ApprovedRevision != 0 || len(p.Approvals) != 0) {
+			t.Fatal("rolled-back publication retained approval")
+		}
+		if !safe && p.Status != "uncertain" {
+			t.Fatal("unknown delivery was treated as safely rejected")
+		}
+		a.tick()
+		for _, ev := range a.state.Outbox {
+			if ev.Kind == "publish" {
+				t.Fatal("failed delivery was retried automatically")
+			}
+		}
+	}
+}
 func signInit(v url.Values, token string) string {
 	rows := []string{}
 	for k := range v {

@@ -1341,6 +1341,7 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(path, "outbox/") && r.Method == "POST" {
 		eid := strings.TrimPrefix(path, "outbox/")
 		var in struct {
+			DeliveryRejected  bool   `json:"delivery_rejected"`
 			OK                bool   `json:"ok"`
 			MessageID         int64  `json:"message_id"`
 			ExternalMessageID string `json:"external_message_id"`
@@ -1367,6 +1368,13 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 						a.event(p.CompanyID, "Опубликовано в Telegram: "+p.Title, "published")
 						a.history(p.CompanyID, "system", "Опубликован материал «"+p.Title+"»: "+p.Body+". Ссылка: "+p.URL)
 						a.notify(p.CompanyID, p.ChatID, "Готово! Материал опубликован.\n"+p.URL)
+					} else if in.DeliveryRejected {
+						p.Status = "review"
+						p.ApprovedRevision = 0
+						p.Approvals = nil
+						p.Error = "Публикация отменена: " + in.Error
+						a.event(p.CompanyID, p.Error, "error")
+						a.notify(p.CompanyID, p.ChatID, p.Error)
 					} else {
 						p.Status = "uncertain"
 						p.Error = "Не удалось подтвердить публикацию: " + in.Error + ". Проверьте канал вручную."
