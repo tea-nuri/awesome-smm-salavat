@@ -1,0 +1,6 @@
+{$DOMAIN} {
+    encode gzip zstd
+    @internal path /internal/* /api/local-session
+    respond @internal 404
+    reverse_proxy backend:8080
+}

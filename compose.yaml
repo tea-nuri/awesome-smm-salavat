@@ -1,0 +1,53 @@
+services:
+  backend:
+    image: awesome-smm:local
+    build:
+      context: .
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.168.0}
+    env_file: .env
+    environment:
+      LOCAL_ADMIN_TOKEN: ""
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - data:/data
+      - codex:/codex
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  bot:
+    image: awesome-smm:local
+    command: ["/opt/venv/bin/python", "/app/bot/main.py"]
+    env_file: .env
+    environment:
+      BACKEND_URL: http://backend:8080
+    volumes:
+      - data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+  proxy:
+    image: caddy:2
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  data:
+  codex:
+  caddy_data:
+  caddy_config:
