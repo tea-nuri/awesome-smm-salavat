@@ -74,6 +74,36 @@ const taskRatio = ref("1:1"), revisionRatio = ref("1:1");
 const taskLogo = ref(""), revisionLogo = ref("");
 const taskStyles = ref([]), revisionStyles = ref([]);
 const branding = ref({ logo_asset_id: "", style_assets: [], style_notes: "", emoji_source: "references", emoji_pack: "" });
+const sourceURL = ref(""), sourceBusy = ref(false), sourceStatus = ref(""), sourceError = ref("");
+const companySources = computed(() => (state.value?.sources || []).filter(s => s.company_id === current.value));
+async function importDocuments(event) {
+  const files = Array.from(event.target.files || []); event.target.value = "";
+  const companyID = current.value; sourceBusy.value = true; sourceError.value = "";
+  try {
+    for (const file of files) {
+      if (file.size > 50 * 1024 * 1024) throw new Error("Документ должен быть до 50 МБ");
+      sourceStatus.value = "Читаем «" + file.name + "»…";
+      const data = new FormData(); data.append("file", file);
+      const auth = headers(); delete auth["Content-Type"];
+      const response = await fetch(`/api/companies/${companyID}/sources`, { method: "POST", headers: auth, body: data });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || "Не удалось прочитать документ");
+      await refresh();
+    }
+    notify("Материалы добавлены и будут учитываться в следующих задачах");
+  } catch (err) { sourceError.value = err.message; }
+  finally { sourceBusy.value = false; sourceStatus.value = ""; }
+}
+async function importWebsite() {
+  const companyID = current.value; sourceBusy.value = true; sourceError.value = ""; sourceStatus.value = "Загружаем и читаем страницу сайта…";
+  try { await api(`companies/${companyID}/sources`, { url: sourceURL.value }); sourceURL.value = ""; await refresh(); notify("Текст сайта добавлен в знания компании"); }
+  catch (err) { sourceError.value = err.message; }
+  finally { sourceBusy.value = false; sourceStatus.value = ""; }
+}
+async function toggleSource(source, enabled) {
+  try { await api(`companies/${source.company_id}/sources/${source.id}`, { enabled }, "PATCH"); await refresh(); }
+  catch (err) { sourceError.value = err.message; await refresh(); }
+}
+
 async function uploadBrandFiles(event, target) {
   const files = Array.from(event.target.files || []);
   event.target.value = "";
@@ -951,15 +981,24 @@ const nav = [
                   rows="8"
                   placeholder="Продукты, услуги, преимущества, факты, ограничения…"
                 ></textarea></label
-              ><label class="upload-zone"
-                ><Upload :size="17" /><span
-                  >Добавить TXT / MD в базу знаний</span
-                ><input type="file" accept=".txt,.md" @change="readFile"
-              /></label>
-              <p class="field-note">
-                PDF можно отправить в чат боту. Ссылки на сайты пока добавляйте
-                вместе с текстом нужных страниц.
-              </p>
+              >
+              <section class="company-sources">
+                <h3>Материалы о компании</h3>
+                <p>Загрузите документы или добавьте сайт. AI будет брать сведения из включённых источников при подготовке контента.</p>
+                <label class="upload-zone"><Upload :size="17" /><span>Загрузить PDF / DOCX / TXT / MD</span><input type="file" accept=".pdf,.docx,.txt,.md" multiple :disabled="sourceBusy" @change="importDocuments" /></label>
+                <small class="source-help">До 50 МБ на файл. Источники сохраняются сразу, отдельно от поля «О компании».</small>
+                <label>Ссылка на страницу сайта<input v-model="sourceURL" type="url" placeholder="https://company.ru/about" :disabled="sourceBusy" @keydown.enter.prevent="importWebsite" /></label>
+                <button type="button" class="button secondary" :disabled="sourceBusy || !sourceURL.trim()" @click="importWebsite"><LoaderCircle v-if="sourceBusy" class="spin" :size="15" /><ExternalLink v-else :size="15" /> Загрузить информацию с сайта</button>
+                <small class="source-help">Импортируется текст страницы по ссылке. Для других разделов можно добавить отдельные ссылки.</small>
+                <div v-if="sourceBusy" class="source-import-status" role="status"><LoaderCircle class="spin" :size="15" /> {{ sourceStatus }}</div>
+                <p v-if="sourceError" class="task-reply-error" role="alert">{{ sourceError }}</p>
+                <div v-if="!companySources.length" class="sources-empty">Пока нет загруженных источников.</div>
+                <article v-for="source in companySources" :key="source.id" class="knowledge-source">
+                  <div class="knowledge-source-head"><FileText :size="19" /><div><b>{{ source.name }}</b><small>{{ source.kind === 'website' ? 'Сайт' : source.kind.toUpperCase() }} · {{ source.characters.toLocaleString('ru-RU') }} знаков текста</small></div><label><input type="checkbox" :checked="source.enabled" @change="toggleSource(source, $event.target.checked)" /> Учитывать</label></div>
+                  <a v-if="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.url }}</a>
+                  <details><summary>Посмотреть извлечённый текст</summary><p>{{ source.preview }}</p></details>
+                </article>
+              </section>
               <label
                 >Целевая аудитория<input
                   v-model="form.audience"
@@ -990,7 +1029,7 @@ const nav = [
                 <label class="photo-upload"><ImageIcon :size="16" /> Добавить примеры стиля<input type="file" accept="image/png,image/jpeg" multiple :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'company-style')" /></label>
                 <label>Пожелания к изображениям<textarea v-model="branding.style_notes" rows="3" maxlength="6000" placeholder="Что взять из примеров: композицию, цвета, шрифты, настроение. Что не использовать." /></label>
                 <label>Эмодзи в публикациях<select v-model="branding.emoji_source"><option value="references">Из пересланных примеров компании</option><option value="pack">Выбранный Telegram-пак</option><option value="standard">Обычные эмодзи</option></select></label>
-                <template v-if="branding.emoji_source === 'pack'"><label>Ссылка или название эмодзи-пака<input v-model="branding.emoji_pack" maxlength="200" placeholder="https://t.me/addemoji/название" /></label><p class="field-note">Подойдёт ссылка «Поделиться» на набор эмодзи или его короткое название. Набор загрузится при сохранении.</p></template>
+                <template v-if="branding.emoji_source === 'pack'"><label>Ссылка или название эмодзи-пака<input v-model="branding.emoji_pack" maxlength="200" placeholder="https://t.me/addemoji/название" /></label><p class="field-note">Подойдёт ссылка «Поделиться» на набор эмодзи или его короткое название. Набор загрузится при сохранении. В публикациях будут только эмодзи этого пака.</p></template>
                 <p v-if="company.emoji_source === 'pack' && company.emoji_title" class="emoji-pack-status">Подключён: {{ company.emoji_title }} · {{ company.emoji_items?.length || 0 }} эмодзи</p>
               </section>
               <label

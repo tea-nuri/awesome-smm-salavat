@@ -1,6 +1,7 @@
 """Telegram transport: long polling + durable Go outbox. Secrets stay server-side."""
 
 import json, logging, os, secrets, signal, threading, time
+import re
 import urllib.parse
 import urllib.request, urllib.error
 from pathlib import Path
@@ -111,6 +112,26 @@ def utf16_len(text):
     return len(text.encode("utf-16-le")) // 2
 
 
+EMOJI_DATA = Path(os.getenv("EMOJI_DATA", str(Path(__file__).resolve().parent.parent / "backend/brand/emoji_sequences.txt")))
+_EMOJI_SEQUENCES = [line for line in EMOJI_DATA.read_text().splitlines() if line and not line.startswith("#")]
+EMOJI_TOKENS = re.compile("(?:" + "|".join(re.escape(value) for value in sorted(_EMOJI_SEQUENCES, key=len, reverse=True)) + r")[\ufe0e\ufe0f]*|[\U0001f000-\U0001faff\u200d\u20e3\ufe0e\ufe0f\U000e0020-\U000e007f]")
+
+
+def canonical_emoji(value):
+    return value.replace("\ufe0f", "").replace("\ufe0e", "")
+
+
+def strict_pack_entities(text, company):
+    allowed = {canonical_emoji(item["emoji"]): str(item["custom_emoji_id"]) for item in company.get("emoji_items") or [] if item.get("emoji") and str(item.get("custom_emoji_id", "")).isdigit()}
+    entities = []
+    for match in EMOJI_TOKENS.finditer(text):
+        emoji_id = allowed.get(canonical_emoji(match.group()))
+        if not emoji_id:
+            raise RuntimeError("В тексте есть эмодзи вне выбранного пака. Исправьте текст перед отправкой")
+        entities.append({"type": "custom_emoji", "offset": utf16_len(text[:match.start()]), "length": utf16_len(match.group()), "custom_emoji_id": emoji_id})
+    return entities
+
+
 def text_entities(text, post, company):
     """Telegram entity positions use UTF-16, including emoji surrogate pairs."""
     entities = []
@@ -127,6 +148,9 @@ def text_entities(text, post, company):
     quote = post.get("quote")
     if quote and quote in text and not first.startswith(quote):
         entities.append({"type": "blockquote", "offset": utf16_len(text[:text.index(quote)]), "length": utf16_len(quote)})
+    if company.get("emoji_source") == "pack":
+        entities.extend(strict_pack_entities(text, company))
+        return sorted(entities, key=lambda e: (e["offset"], -e["length"]))
     emoji_map = {}
     source = company.get("emoji_source", "references")
     if source == "pack":
@@ -163,9 +187,10 @@ def text_entities(text, post, company):
 
 
 def rich_send(chat, text, post, company):
+    if company.get("emoji_source") == "pack": strict_pack_entities(text, company)
     # Never split a Unicode surrogate or truncate a long corporate post.
     chunks, current = [], ""
-    for char in text:
+    for char in re.findall(EMOJI_TOKENS.pattern + r"|[\s\S]", text):
         if utf16_len(current + char) > 3900:
             chunks.append(current)
             current = ""
@@ -178,7 +203,7 @@ def rich_send(chat, text, post, company):
         try:
             result = tg("sendMessage", data)
         except RuntimeError as exc:
-            if isinstance(exc, TransportError) or not emoji_rejected(exc, data["entities"]):
+            if company.get("emoji_source") == "pack" or isinstance(exc, TransportError) or not emoji_rejected(exc, data["entities"]):
                 raise
             data["entities"] = [e for e in data["entities"] if e["type"] != "custom_emoji"]
             logging.warning("Telegram rejected custom emoji for this destination; using standard emoji")
@@ -191,7 +216,7 @@ def emoji_rejected(error, entities):
     return any(e["type"] == "custom_emoji" for e in entities) and any(term in message for term in ("custom emoji", "custom_emoji", "premium account", "premium required"))
 
 
-def photo(chat, name, caption, markup=None, entities=None):
+def photo(chat, name, caption, markup=None, entities=None, strict_emoji=False):
     req = urllib.request.Request(
         BACKEND + "/internal/media/" + name,
         headers={"Authorization": "Bearer " + INTERNAL},
@@ -231,7 +256,7 @@ def photo(chat, name, caption, markup=None, entities=None):
     except RuntimeError as exc:
         # A positive Telegram rejection is safe to retry. An unknown network
         # outcome is never retried here because the photo may already exist.
-        if isinstance(exc, TransportError) or not emoji_rejected(exc, entities or []):
+        if strict_emoji or isinstance(exc, TransportError) or not emoji_rejected(exc, entities or []):
             raise
         logging.warning("Telegram rejected custom emoji for this destination; using standard emoji")
         return photo(chat, name, caption, markup, [e for e in entities if e["type"] != "custom_emoji"])
@@ -242,10 +267,12 @@ def photo(chat, name, caption, markup=None, entities=None):
 
 def deliver_post(chat, post, company):
     body = post["body"]
+    entities = text_entities(body, post, company)  # Validate the whole post before any delivery.
+    strict = company.get("emoji_source") == "pack"
     if utf16_len(body) <= 1000:
-        return photo(chat, post["image"], body, entities=text_entities(body, post, company))
+        return photo(chat, post["image"], body, entities=entities, strict_emoji=strict)
     hook = body.split("\n", 1)[0]
-    photo(chat, post["image"], hook, entities=text_entities(hook, post, company))
+    photo(chat, post["image"], hook, entities=text_entities(hook, post, company), strict_emoji=strict)
     return rich_send(chat, body, post, company)
 
 
@@ -595,7 +622,10 @@ def outbox_loop():
                 post = data.get("post", {})
                 company = data.get("company", {})
                 if kind == "message":
-                    send(chat, event["text"])
+                    if company.get("emoji_source") == "pack":
+                        rich_send(chat, event["text"], {}, company)
+                    else:
+                        send(chat, event["text"])
                 elif kind == "preview":
                     if post.get("status") != "review":
                         api("outbox/" + event["id"], {"ok": True})

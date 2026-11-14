@@ -82,6 +82,48 @@ class BotDeliveryTest(unittest.TestCase):
         self.assertEqual(api.call_args.args[0], "reference")
         self.assertEqual(api.call_args.args[1]["update_id"], 200)
 
+    def test_pack_mode_rejects_unknown_emoji_before_any_delivery(self):
+        company = {"emoji_source": "pack", "emoji_items": [{"emoji": "🍏", "custom_emoji_id": "123"}]}
+        body = "🍏 Фрукты\n\n" + "Обычный текст. " * 100 + "🥕"
+        with patch.object(bot, "photo") as photo, patch.object(bot, "tg") as tg:
+            with self.assertRaisesRegex(RuntimeError, "вне выбранного пака"):
+                bot.deliver_post(1, {"body": body, "image": "existing.png"}, company)
+            photo.assert_not_called()
+            tg.assert_not_called()
+
+    def test_pack_mode_assigns_ids_to_whole_emoji_sequences(self):
+        company = {"emoji_source": "pack", "emoji_items": [{"emoji": "👩‍💻", "custom_emoji_id": "1"}, {"emoji": "⚽️", "custom_emoji_id": "2"}]}
+        text = "👩‍💻 Go 1.23 #Команда — ⚽"
+        entities = [e for e in bot.text_entities(text, {}, company) if e["type"] == "custom_emoji"]
+        self.assertEqual([e["custom_emoji_id"] for e in entities], ["1", "2"])
+        self.assertEqual(entities[0]["length"], 5)
+        self.assertEqual(entities[1]["offset"], bot.utf16_len(text[:text.index("⚽")]))
+        with self.assertRaises(RuntimeError):
+            bot.text_entities("👩‍🚀", {}, company)
+
+    def test_rich_chunks_do_not_split_a_custom_emoji(self):
+        company = {"emoji_source": "pack", "emoji_items": [{"emoji": "👩‍💻", "custom_emoji_id": "123"}]}
+        text = "a" * 3898 + "👩‍💻" + "x"
+        with patch.object(bot, "tg", return_value={"message_id": 1}) as tg:
+            bot.rich_send(1, text, {}, company)
+            payloads = [call.args[1] for call in tg.call_args_list]
+            self.assertEqual("".join(item["text"] for item in payloads), text)
+            self.assertEqual(payloads[1]["text"], "👩‍💻x")
+            self.assertEqual(next(e for e in payloads[1]["entities"] if e["type"] == "custom_emoji")["length"], 5)
+
+    def test_pack_mode_never_retries_text_as_standard_emoji(self):
+        company = {"emoji_source": "pack", "emoji_items": [{"emoji": "🍏", "custom_emoji_id": "123"}]}
+        with patch.object(bot, "tg", side_effect=RuntimeError("Bad Request: custom emoji not allowed")) as tg:
+            with self.assertRaises(RuntimeError):
+                bot.rich_send(1, "🍏 Фрукты", {}, company)
+            tg.assert_called_once()
+
+    def test_pack_mode_never_retries_photo_as_standard_emoji(self):
+        with patch.object(bot.urllib.request, "urlopen", return_value=io.BytesIO(b"image")), patch.object(bot, "request", side_effect=RuntimeError("Bad Request: custom emoji not allowed")) as request:
+            with self.assertRaises(RuntimeError):
+                bot.photo(1, "existing.png", "🍏 Фрукты", entities=[{"type": "custom_emoji", "offset": 0, "length": 2, "custom_emoji_id": "123"}], strict_emoji=True)
+            request.assert_called_once()
+
     def test_explicit_custom_emoji_rejection_uses_standard_fallback(self):
         company = {"references": [{"text": "💎", "entities": [{"type": "custom_emoji", "offset": 0, "length": 2, "custom_emoji_id": "12345"}]}]}
         calls = []

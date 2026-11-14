@@ -1940,3 +1940,14 @@ h1 { font-family: "Intro", sans-serif; font-weight: 900; letter-spacing: -.6px; 
 .task-journal summary { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:10px; color:#789096; margin-bottom:10px; }
 @media(max-width:620px) { .task-dialog-panel { scroll-margin-top:12px; }.task-dialog-timeline { max-height:300px; }.task-turn.user { margin-left:14px; }.clarification-notice { padding:12px; gap:10px; }.clarification-notice small { font-size:10px; } }
 @media(prefers-reduced-motion:reduce) { .task-progress-track span { animation:none; width:100%; opacity:.5; } }
+
+.company-sources { border:1px solid #dce7e8; border-radius:12px; padding:17px; margin:5px 0 15px; background:#f8fbfb; min-width:0; }
+.company-sources h3 { font-size:15px; margin:0 0 8px; color:#285055; }.company-sources > p { font-size:11px; line-height:1.6; color:#6c858a; margin:0 0 13px; }
+.company-sources .upload-zone { padding:17px 10px; font-size:11px; margin:10px 0; }.company-sources > label { display:block; margin:15px 0 9px; font-size:11px; }.company-sources > label input { margin-top:7px; font-size:12px; }
+.company-sources > .button { font-size:11px; width:100%; justify-content:center; }.source-help { display:block; color:#789096; font-size:10px; line-height:1.6; margin:8px 0; }
+.source-import-status { display:flex; align-items:center; gap:7px; color:#196c7f; font-size:11px; padding:11px 0; }.sources-empty { color:#8ba0a4; font-size:11px; margin-top:17px; }
+.knowledge-source { padding:13px; border:1px solid #dce7e8; border-radius:9px; background:white; margin-top:12px; min-width:0; }
+.knowledge-source-head { display:flex; align-items:flex-start; gap:8px; }.knowledge-source-head > svg { color:#196c7f; flex-shrink:0; }.knowledge-source-head > div { flex:1; min-width:0; }
+.knowledge-source-head b { font-size:11px; line-height:1.5; display:block; overflow-wrap:anywhere; }.knowledge-source-head small { display:block; font-size:9px; color:#789096; margin-top:4px; }
+.knowledge-source-head label { display:flex; align-items:center; gap:4px; font-size:9px; margin:0; flex-shrink:0; }.knowledge-source-head input { width:13px; height:13px; padding:0; margin:0; accent-color:#196c7f; }
+.knowledge-source > a { display:block; overflow-wrap:anywhere; color:#196c7f; font-size:10px; margin-top:9px; }.knowledge-source summary { cursor:pointer; color:#6c858a; font-size:10px; margin-top:11px; }.knowledge-source details p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:10px; line-height:1.7; color:#6c858a; margin:9px 0 0; max-height:190px; overflow:auto; }
