@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -32,9 +33,11 @@ func (a *App) providerConfigAPI(w http.ResponseWriter, r *http.Request, u identi
 		return
 	}
 	var in struct {
-		Model string `json:"model"`
-		Key   string `json:"api_key"`
-		Clear bool   `json:"clear_key"`
+		Model    string `json:"model"`
+		BaseURL  string `json:"base_url"`
+		AuthMode string `json:"auth_mode"`
+		Key      string `json:"api_key"`
+		Clear    bool   `json:"clear_key"`
 	}
 	if decode(r, &in) != nil || (in.Model != "" && !modelName.MatchString(in.Model)) || len(in.Key) > 1024 || strings.ContainsAny(in.Key, "\r\n\x00") {
 		fail(w, 400, "Проверьте модель и ключ")
@@ -42,7 +45,23 @@ func (a *App) providerConfigAPI(w http.ResponseWriter, r *http.Request, u identi
 	}
 	cfg := a.state.Control.Providers[provider]
 	cfg.Model = in.Model
-	if (provider == "deepseek" || provider == "gemini") && (in.Key != "" || in.Clear) {
+	if provider == "ollama" {
+		baseURL, err := ollamaBaseURL(in.BaseURL)
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		mode := in.AuthMode
+		if mode == "" {
+			mode = "none"
+		}
+		if mode != "none" && mode != "bearer" {
+			fail(w, 400, "Выберите способ авторизации Ollama")
+			return
+		}
+		cfg.BaseURL, cfg.AuthMode = baseURL, mode
+	}
+	if (provider == "deepseek" || provider == "gemini" || provider == "ollama") && (in.Key != "" || in.Clear) {
 		key := strings.TrimSpace(in.Key)
 		if in.Clear {
 			key = ""
@@ -144,4 +163,25 @@ func (a *App) executeRemoteText(ctx context.Context, p Post, prompt, outFile, ui
 
 func imageDataURL(raw []byte) string {
 	return "data:" + http.DetectContentType(raw) + ";base64," + base64.StdEncoding.EncodeToString(raw)
+}
+
+// Explicit administrator configuration supports remote private-network endpoints as well as HTTPS gateways.
+func ollamaBaseURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("Укажите адрес API Ollama: https://ollama.example.ru или http://IP:11434")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	for _, suffix := range []string{"/api/generate", "/api/chat", "/api"} {
+		if strings.HasSuffix(u.Path, suffix) {
+			u.Path = strings.TrimSuffix(u.Path, suffix)
+			break
+		}
+	}
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), nil
 }

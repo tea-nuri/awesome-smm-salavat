@@ -666,8 +666,7 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
       <button :class="{active:extraNav.some(n=>n.id===tab)}" @click="moreMenu=!moreMenu;companyMenu=false"><Menu :size="20"/><span>Ещё</span></button></nav>
       <div class="sidebar-bottom">
         <div class="connection">
-          <span class="online-dot"></span><b>{{state.provider||"ChatGPT · Codex"}}</b
-          ><small>Исполнитель текста</small>
+          <span class="online-dot" :class="{offline:!state.ai_connected}"></span><b>{{state.provider||"ChatGPT"}}</b>
         </div>
         <div class="account">
           <span class="user-avatar">{{

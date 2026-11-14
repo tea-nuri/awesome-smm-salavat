@@ -181,6 +181,15 @@ func main() {
 	if e := a.load(); e != nil {
 		log.Fatal(e)
 	}
+	if err := os.MkdirAll(a.codexHome(), 0700); err != nil {
+		log.Fatal("Не удалось подготовить профиль ChatGPT")
+	}
+	if !a.chatGPTConnected() {
+		a.mu.Lock()
+		a.state.Control.Quota = nil
+		a.persist()
+		a.mu.Unlock()
+	}
 	go a.worker()
 	go a.publicationClock()
 	go a.operationsWorker()
@@ -547,7 +556,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if c := a.active(u); c != nil {
 			active = c.ID
 		}
-		reply(w, 200, map[string]any{"user": u, "companies": cs, "posts": ps, "tasks": tasks, "sources": sources, "events": es, "schedules": ss, "active_company": active, "provider": map[string]string{"": "ChatGPT · Codex", "codex": "ChatGPT · Codex", "ollama": "Ollama", "deepseek": "DeepSeek · API", "gemini": "Gemini · API"}[a.state.Control.Provider], "image_provider": "GPT Image · генерация по референсам", "public_url": a.publicURL})
+		reply(w, 200, map[string]any{"user": u, "companies": cs, "posts": ps, "tasks": tasks, "sources": sources, "events": es, "schedules": ss, "active_company": active, "ai_connected": a.providerConfigured(), "provider": map[string]string{"": "ChatGPT", "codex": "ChatGPT", "ollama": "Ollama", "deepseek": "DeepSeek", "gemini": "Gemini"}[a.state.Control.Provider], "image_provider": "GPT Image · генерация по референсам", "public_url": a.publicURL})
 		return
 	}
 	if path == "companies" && r.Method == "POST" {

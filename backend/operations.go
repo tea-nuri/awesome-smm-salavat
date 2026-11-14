@@ -72,8 +72,10 @@ type CompanyOperations struct {
 	AutoReplyDailyLimit int                 `json:"auto_reply_daily_limit"`
 }
 type ProviderConfig struct {
-	Model  string `json:"model"`
-	KeySet bool   `json:"key_set"`
+	BaseURL  string `json:"base_url"`
+	AuthMode string `json:"auth_mode"`
+	Model    string `json:"model"`
+	KeySet   bool   `json:"key_set"`
 }
 type ControlSettings struct {
 	Providers      map[string]ProviderConfig `json:"providers"`
@@ -146,7 +148,7 @@ var builtinSkills = []SkillDefinition{
 func (a *App) initOperations() {
 	if a.state.Control.Providers == nil {
 		a.state.Control.Providers = map[string]ProviderConfig{
-			"codex": {Model: ""}, "ollama": {Model: "qwen3:8b"}, "deepseek": {Model: "deepseek-flash"}, "gemini": {Model: "gemini-4-hydrogen"},
+			"codex": {Model: ""}, "ollama": {Model: "", AuthMode: "none"}, "deepseek": {Model: "deepseek-flash"}, "gemini": {Model: "gemini-4-hydrogen"},
 		}
 		current := a.state.Control.Provider
 		if current == "" {

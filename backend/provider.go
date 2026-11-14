@@ -37,7 +37,8 @@ func (a *App) executeText(ctx context.Context, p Post, prompt, jobDir, outFile s
 		}
 	}
 	key := ""
-	if provider == "deepseek" || provider == "gemini" {
+	cfg := a.state.Control.Providers[provider]
+	if provider == "deepseek" || provider == "gemini" || provider == "ollama" && cfg.AuthMode == "bearer" {
 		key, _ = a.connectionSecret("ai", provider)
 	}
 	a.mu.Unlock()
@@ -45,7 +46,7 @@ func (a *App) executeText(ctx context.Context, p Post, prompt, jobDir, outFile s
 		return a.executeRemoteText(ctx, p, prompt, outFile, uid, provider, model, key)
 	}
 	if provider == "ollama" {
-		return a.executeOllama(ctx, p, prompt, outFile, uid, model)
+		return a.executeOllama(ctx, p, prompt, outFile, uid, model, cfg.BaseURL, cfg.AuthMode, key)
 	}
 	args := []string{"exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "features.shell_tool=false", "--json", "-C", jobDir, "-o", outFile}
 	if model != "" {
@@ -69,22 +70,27 @@ func (a *App) executeText(ctx context.Context, p Post, prompt, jobDir, outFile s
 	}
 	return nil
 }
-func (a *App) executeOllama(ctx context.Context, p Post, prompt, outFile, uid, model string) error {
-	if model == "" {
-		model = "qwen3:8b"
+func (a *App) executeOllama(ctx context.Context, p Post, prompt, outFile, uid, model, baseURL, authMode, key string) error {
+	if model == "" || baseURL == "" || authMode == "bearer" && key == "" {
+		err := errors.New("Проверьте адрес API, модель и авторизацию Ollama")
+		a.finishUsage(uid, "", err)
+		return err
 	}
 	body, _ := json.Marshal(map[string]any{"model": model, "prompt": prompt, "stream": false, "format": "json"})
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(env("OLLAMA_URL", "http://127.0.0.1:11434"), "/")+"/api/generate", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(baseURL, "/")+"/api/generate", bytes.NewReader(body))
 	if err != nil {
 		a.finishUsage(uid, "", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 150 * time.Second}
+	if authMode == "bearer" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	client := &http.Client{Timeout: 150 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
 		a.finishUsage(uid, "", err)
-		return errors.New("Локальная модель Ollama недоступна")
+		return errors.New("Не удалось подключиться к серверу Ollama")
 	}
 	defer res.Body.Close()
 	var result struct {
@@ -95,7 +101,7 @@ func (a *App) executeOllama(ctx context.Context, p Post, prompt, outFile, uid, m
 	}
 	err = json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&result)
 	if res.StatusCode != 200 || result.Response == "" || err != nil {
-		err = errors.New("Локальная модель не вернула результат")
+		err = errors.New("Сервер Ollama не вернул результат. Проверьте адрес, модель и авторизацию")
 	}
 	events := ""
 	if result.Input != nil && result.Output != nil {

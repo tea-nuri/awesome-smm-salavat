@@ -72,6 +72,9 @@ func aiEnvironment() []string {
 // Queries only account limits. Account IDs, reset-credit identifiers and tokens
 // returned by the account service never enter the application state or API.
 func (a *App) readQuota(parent context.Context) (*QuotaSnapshot, error) {
+	if !a.chatGPTConnected() {
+		return nil, errors.New("Войдите в ChatGPT в разделе «Лимиты и доступы»")
+	}
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	args := append([]string{"app-server", "--stdio"}, a.authArguments()...)
@@ -146,6 +149,18 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 	provider := a.state.Control.Provider
 	if provider == "" || kind == "image" {
 		provider = "codex"
+	}
+	if provider == "codex" && !a.chatGPTConnected() {
+		return "", errors.New("Войдите в ChatGPT в разделе «Лимиты и доступы»")
+	}
+	if provider == "ollama" {
+		cfg := a.state.Control.Providers[provider]
+		if cfg.BaseURL == "" || cfg.Model == "" {
+			return "", errors.New("Укажите адрес API и модель удалённого сервера Ollama")
+		}
+		if cfg.AuthMode == "bearer" && !cfg.KeySet {
+			return "", errors.New("Добавьте ключ доступа к серверу Ollama")
+		}
 	}
 	if (provider == "deepseek" || provider == "gemini") && !a.state.Control.Providers[provider].KeySet {
 		return "", errors.New("Добавьте API-ключ в разделе «Лимиты и доступы»")
@@ -256,8 +271,24 @@ func (a *App) modelArguments(image bool) []string {
 	return nil
 }
 func (a *App) quotaWorker() {
+	if !a.chatGPTConnected() {
+		a.mu.Lock()
+		if a.state.Control.Quota != nil {
+			a.state.Control.Quota = nil
+			a.persist()
+		}
+		a.mu.Unlock()
+		return
+	}
+
 	q, err := a.readQuota(context.Background())
 	a.mu.Lock()
+	if !a.chatGPTConnected() {
+		a.state.Control.Quota = nil
+		a.persist()
+		a.mu.Unlock()
+		return
+	}
 	if err == nil {
 		a.state.Control.Quota = q
 	} else {
