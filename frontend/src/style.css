@@ -1127,7 +1127,6 @@ footer > span:last-child {
 .post-detail > .creative-img {
   height: auto;
   align-self: start;
-  aspect-ratio: 1;
   object-fit: contain;
 }
 .detail-copy {
@@ -1872,3 +1871,44 @@ h1 { font-family: "Intro", sans-serif; font-weight: 900; letter-spacing: -.6px; 
 .studio-mark { display: grid; place-items: center; width: 43px; height: 48px; color: #196c7f; border: 1px solid #c1d0d3; border-radius: 10px; background: #f3f6f6; flex-shrink: 0; }
 .studio-name { font-family: Intro,sans-serif; font-size: 19px; line-height: 1.14; letter-spacing: -.4px; color: #285055; }
 .brand { gap: 11px; height: 59px; }
+.photo-controls { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; }
+.photo-controls small { font-size:10px; color:#6c858a; }
+.photo-upload { display:inline-flex; align-items:center; gap:7px; cursor:pointer; color:#196c7f; font-size:12px; padding:8px 0; }
+.photo-upload input { display:none; }
+.photo-previews { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+.photo-previews figure { position:relative; margin:0; width:74px; height:74px; }
+.photo-previews img { width:100%;height:100%;object-fit:cover;border:1px solid #c1d0d3;border-radius:8px; }
+.photo-previews button { position:absolute;right:-4px;top:-4px;width:22px;height:22px;background:white;border:1px solid #c1d0d3;border-radius:50%;display:grid;place-items:center;color:#285055; }
+.photo-help { color:#52737a; font-size:11px; line-height:1.5; margin:9px 0; }
+.image-format { border:0; padding:0; margin:17px 0; min-width:0; }
+.image-format legend { font-size:11px; color:#52737a; margin-bottom:8px; }
+.format-options { display:flex; gap:7px; }
+.format-choice { display:flex; align-items:center; gap:9px; flex:1; min-width:0; padding:10px; border:1px solid #d9e3e4; border-radius:9px; background:#fff; color:#52737a; text-align:left; }
+.format-choice.active { border-color:#196c7f; background:#edf5f6; box-shadow:0 0 0 1px #196c7f; color:#196c7f; }
+.format-choice b,.format-choice small { display:block; }
+.format-choice b { font-size:12px; }.format-choice small { font-size:10px; margin-top:2px; }
+.format-shape { display:block; width:20px; height:20px; border:1.5px solid currentColor; border-radius:3px; flex-shrink:0; }
+.format-shape.portrait { width:18px; height:23px; }.format-shape.wide { width:25px; height:15px; }
+.format-help { display:block; font-size:10px; line-height:1.6; color:#789096; margin-top:8px; }
+@media(max-width:620px) { .format-choice { padding:9px 7px; gap:6px; }.format-choice small { font-size:9px; }.format-shape { width:16px; height:16px; }.format-shape.portrait { width:15px; height:19px; }.format-shape.wide { width:21px; height:12px; } }
+.photo-only { display:flex;align-items:center;gap:8px;font-size:11px; margin:14px 0; }
+.photo-only input { width:15px;height:15px;margin:0;accent-color:#196c7f; }
+
+.brand-settings-fields { margin:25px 0; padding:22px 0 5px; border-top:1px solid #dde7e8; }
+.brand-settings-fields h3 { margin-bottom:18px; font-size:16px; }
+.brand-settings-fields .field-note { margin-top:5px; }
+.brand-logo-row { display:flex; align-items:center; gap:14px; padding:14px; border:1px solid #dce6e7; border-radius:9px; margin:10px 0; background:white; }
+.brand-logo-row .creative-img { width:170px; height:82px; object-fit:contain; }
+.text-button { background:none; border:0; padding:5px; font-size:11px; color:#196c7f; text-decoration:underline; }
+.brand-style-previews { display:flex; flex-wrap:wrap; gap:9px; margin:12px 0; }
+.brand-style-previews figure { position:relative; width:82px; height:82px; margin:0; border-radius:8px; border:1px solid #d9e3e4; }
+.brand-style-previews img { border-radius:8px; object-fit:cover; }
+.brand-style-previews figure button { position:absolute; right:-4px; top:-4px; display:grid; place-items:center; width:22px; height:22px; border-radius:50%; border:1px solid #cadbdd; background:white; color:#285055; }
+.emoji-pack-status { padding:10px; margin:12px 0; border-radius:8px; background:#edf5f6; color:#196c7f; font-size:11px; }
+.post-brand-overrides { margin:12px 0 18px; padding:12px; border:1px solid #e0e9ea; border-radius:8px; }
+.post-brand-overrides summary { cursor:pointer; color:#52737a; font-size:11px; line-height:1.5; }
+.post-brand-overrides .field-note { margin:10px 0; color:#789096; }
+.revision-scope { margin:0 0 17px; padding:0; border:0; display:flex; flex-wrap:wrap; gap:8px 15px; }
+.revision-scope legend { color:#52737a; font-size:11px; margin-bottom:9px; }
+.revision-scope label { display:flex; align-items:center; gap:6px; font-size:11px; margin:0; }
+.revision-scope input { width:14px; height:14px; padding:0; margin:0; accent-color:#196c7f; }

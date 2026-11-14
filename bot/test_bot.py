@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -17,6 +18,44 @@ spec.loader.exec_module(bot)
 
 
 class BotDeliveryTest(unittest.TestCase):
+    def test_photo_album_submits_once_with_all_sources(self):
+        with patch.dict(bot.STATE, {"offset":0,"revisions":{},"image_formats":{"1":"4:5"}},clear=True), patch.object(bot,"tg",return_value={"file_path":"photo.jpg"}), patch.object(bot.urllib.request,"urlopen",side_effect=lambda *a,**k:io.BytesIO(b"image")), patch.object(bot,"request",side_effect=[{"id":"one","company_id":"a"},{"id":"two","company_id":"a"}]), patch.object(bot,"api",return_value={"reply":"ok"}) as api, patch.object(bot,"acknowledge"), patch.object(bot.time,"time",return_value=100):
+            for index in [1,2]:
+                message={"from":{"id":1},"chat":{"id":1},"media_group_id":"album","photo":[{"file_id":str(index)}]}
+                if index==1:message["caption"]="Создай коллаж"
+                bot.receive_photo(message,1000+index)
+            bot.flush_media_once()
+            api.assert_not_called()
+            with patch.object(bot.time,"time",return_value=104):
+                bot.flush_media_once()
+                bot.flush_media_once()
+            api.assert_called_once()
+            self.assertEqual(api.call_args.args[1]["attachments"],["one","two"])
+            self.assertEqual(api.call_args.args[1]["company_id"],"a")
+            self.assertEqual(api.call_args.args[1]["aspect_ratio"],"4:5")
+            self.assertEqual(api.call_args.args[1]["image_mode"],"style")
+            self.assertFalse(bot.STATE["media_submissions"])
+
+    def test_format_command_updates_pending_album_without_creating_post(self):
+        with patch.dict(bot.STATE, {"revisions": {}, "media_drafts": {"1": {"photos": ["photo"]}}}, clear=True), patch.object(bot, "api") as api, patch.object(bot, "acknowledge"):
+            bot.handle({"update_id": 100, "message": {"from": {"id": 1}, "chat": {"id": 1, "type": "private"}, "text": "/format_wide"}})
+            self.assertEqual(bot.STATE["image_formats"]["1"], "16:9")
+            self.assertEqual(bot.STATE["media_drafts"]["1"]["aspect_ratio"], "16:9")
+            api.assert_not_called()
+
+    def test_photos_wait_for_task_and_do_not_become_materials(self):
+        with patch.dict(bot.STATE,{"offset":0,"revisions":{},"media_drafts":{"1":{"photos":["photo"],"user_id":1,"chat_id":1,"updated_at":0,"update_id":200}}},clear=True), patch.object(bot,"api") as api:
+            bot.flush_media_once()
+            api.assert_not_called()
+            self.assertTrue(bot.STATE["media_drafts"])
+
+    def test_selected_pack_replaces_reference_pack_and_can_be_disabled(self):
+        company = {"emoji_source": "pack", "emoji_items": [{"emoji": "💙", "custom_emoji_id": "222"}], "references": [{"text": "💙", "entities": [{"type": "custom_emoji", "offset": 0, "length": 2, "custom_emoji_id": "111"}]}]}
+        entities = bot.text_entities("💙 Команда", {}, company)
+        self.assertEqual([e["custom_emoji_id"] for e in entities if e["type"] == "custom_emoji"], ["222"])
+        company["emoji_source"] = "standard"
+        self.assertFalse(any(e["type"] == "custom_emoji" for e in bot.text_entities("💙 Команда", {}, company)))
+
     def test_custom_emoji_offsets_after_surrogate_pairs(self):
         text = "🏆 Команда\n\nСпасибо 💙\n\n#Вкоманде"
         ref = {"text": "Спасибо 💙", "entities": [{"type": "custom_emoji", "offset": 8, "length": 2, "custom_emoji_id": "12345"}]}

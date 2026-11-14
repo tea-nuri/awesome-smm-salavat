@@ -1,6 +1,7 @@
 """Telegram transport: long polling + durable Go outbox. Secrets stay server-side."""
 
-import json, logging, os, secrets, signal, threading
+import json, logging, os, secrets, signal, threading, time
+import urllib.parse
 import urllib.request, urllib.error
 from pathlib import Path
 
@@ -11,7 +12,7 @@ PUBLIC = os.getenv("PUBLIC_URL", "").rstrip("/")
 DATA = Path(os.getenv("BOT_DATA_DIR", "data/bot"))
 DATA.mkdir(parents=True, exist_ok=True)
 STOP = threading.Event()
-STATE_LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()
 try:
     STATE = json.loads((DATA / "state.json").read_text())
 except FileNotFoundError:
@@ -127,15 +128,27 @@ def text_entities(text, post, company):
     if quote and quote in text and not first.startswith(quote):
         entities.append({"type": "blockquote", "offset": utf16_len(text[:text.index(quote)]), "length": utf16_len(quote)})
     emoji_map = {}
-    for ref in company.get("references") or []:
-        raw = ref["text"].encode("utf-16-le")
-        for e in ref.get("entities") or []:
-            emoji_id = e.get("custom_emoji_id", "")
-            if e.get("type") != "custom_emoji" or not emoji_id.isdigit():
-                continue
-            emoji = raw[e["offset"] * 2:(e["offset"] + e["length"]) * 2].decode("utf-16-le", errors="ignore")
-            if emoji and len(emoji) <= 12:
-                emoji_map[emoji] = emoji_id
+    source = company.get("emoji_source", "references")
+    if source == "pack":
+        for item in company.get("emoji_items") or []:
+            if item.get("emoji") and str(item.get("custom_emoji_id", "")).isdigit():
+                emoji_map[item["emoji"]] = str(item["custom_emoji_id"])
+    elif source != "standard":
+        for ref in company.get("references") or []:
+            raw = ref["text"].encode("utf-16-le")
+            for e in ref.get("entities") or []:
+                emoji_id = e.get("custom_emoji_id", "")
+                if e.get("type") != "custom_emoji" or not emoji_id.isdigit():
+                    continue
+                emoji = raw[e["offset"] * 2:(e["offset"] + e["length"]) * 2].decode("utf-16-le", errors="ignore")
+                if emoji and len(emoji) <= 12:
+                    emoji_map[emoji] = emoji_id
+    for emoji, emoji_id in list(emoji_map.items()):
+        simple = emoji.replace("\ufe0f", "")
+        if simple:
+            emoji_map.setdefault(simple, emoji_id)
+            if not emoji.endswith("\ufe0f"):
+                emoji_map.setdefault(emoji + "\ufe0f", emoji_id)
     used = set()
     for emoji in sorted(emoji_map, key=len, reverse=True):
         offset = 0
@@ -236,6 +249,109 @@ def deliver_post(chat, post, company):
     return rich_send(chat, body, post, company)
 
 
+def receive_photo(message, update_id):
+    uid, chat = message["from"]["id"], message["chat"]["id"]
+    key = str(uid)
+    with STATE_LOCK:
+        drafts = STATE.setdefault("media_drafts", {})
+        draft = drafts.setdefault(key, {"photos": [], "chat_id": chat, "user_id": uid, "aspect_ratio": STATE.get("image_formats", {}).get(key, "1:1")})
+        if len(draft["photos"]) >= 6:
+            acknowledge(chat, "К задаче можно приложить до 6 фотографий. Отправьте описание задачи или /cancel.")
+            return
+        if update_id in draft.get("updates", []):
+            return
+        draft["uploading"] = True
+        draft["updated_at"] = time.time()
+        company_id = draft.get("company_id", "")
+        save()
+    try:
+        photo = message["photo"][-1] if message.get("photo") else message["document"]
+        if photo.get("file_size", 0) > 12 * 1024 * 1024:
+            raise RuntimeError("Выберите JPG или PNG до 12 МБ")
+        file = tg("getFile", {"file_id": photo["file_id"]})
+        with urllib.request.urlopen("https://api.telegram.org/file/bot" + TOKEN + "/" + file["file_path"], timeout=35) as response:
+            content = response.read(12 * 1024 * 1024 + 1)
+        if len(content) > 12 * 1024 * 1024:
+            raise RuntimeError("Выберите JPG или PNG до 12 МБ")
+        query = urllib.parse.urlencode({"user_id": uid, "company_id": company_id})
+        asset = request(BACKEND + "/internal/assets?" + query, content, {"Authorization": "Bearer " + INTERNAL, "Content-Type": "application/octet-stream", "X-File-Name": "telegram-photo.jpg"})
+        with STATE_LOCK:
+            draft = STATE.setdefault("media_drafts", {}).get(key)
+            if draft is None:
+                return
+            first = not draft["photos"]
+            draft["photos"].append(asset["id"])
+            draft["company_id"] = asset["company_id"]
+            draft.setdefault("updates", []).append(update_id)
+            draft["update_id"] = update_id
+            draft["updated_at"] = time.time()
+            draft["uploading"] = False
+            if message.get("caption"):
+                draft["caption"] = message["caption"]
+            if key in STATE.get("revisions", {}):
+                draft["revision"] = STATE["revisions"][key].copy()
+            save()
+        if first and not message.get("caption"):
+            acknowledge(chat, "Фото сохранено. Можно добавить ещё фото или прислать задачу текстом. AI использует снимки в самой генерации, чтобы естественно вписать их в композицию.\n\nФормат: /format_square — 1:1, /format_portrait — 4:5, /format_wide — 16:9.")
+    except Exception:
+        with STATE_LOCK:
+            draft = STATE.get("media_drafts", {}).get(key)
+            if draft:
+                if draft["photos"]:
+                    draft["uploading"] = False
+                else:
+                    STATE["media_drafts"].pop(key, None)
+                save()
+        raise
+
+
+def flush_media_once():
+    with STATE_LOCK:
+        drafts = STATE.setdefault("media_drafts", {})
+        pending = STATE.setdefault("media_submissions", {})
+        for key, draft in list(drafts.items()):
+            if draft.get("photos") and draft.get("caption") and not draft.get("uploading") and time.time() - draft.get("updated_at", 0) >= 3:
+                pending[str(draft["update_id"])] = drafts.pop(key)
+        ready = next(((key, draft.copy()) for key, draft in pending.items() if draft.get("retry_at", 0) <= time.time()), None)
+        save()
+    if not ready:
+        return
+    key, draft = ready
+    payload = {"user_id": draft["user_id"], "update_id": draft["update_id"], "attachments": draft["photos"], "image_mode": "style", "aspect_ratio": draft.get("aspect_ratio", "1:1")}
+    try:
+        if draft.get("revision"):
+            payload.update(draft["revision"], action="revise", comment=draft["caption"], image_only=True)
+            result = api("action", payload)
+        else:
+            payload.update(chat_id=draft["chat_id"], company_id=draft["company_id"], text=draft["caption"])
+            result = api("message", payload)
+        with STATE_LOCK:
+            STATE["media_submissions"].pop(key, None)
+            if STATE.get("revisions", {}).get(str(draft["user_id"])) == draft.get("revision"):
+                STATE["revisions"].pop(str(draft["user_id"]), None)
+            save()
+        acknowledge(draft["chat_id"], "Фото и задача приняты. Готовлю новый макет; пришлю на согласование.")
+    except TransportError:
+        with STATE_LOCK:
+            if key in STATE["media_submissions"]:
+                STATE["media_submissions"][key]["retry_at"] = time.time() + 8
+            save()
+    except RuntimeError as error:
+        with STATE_LOCK:
+            STATE["media_submissions"].pop(key, None)
+            save()
+        acknowledge(draft["chat_id"], "Не удалось принять фото: " + str(error)[:180])
+
+
+def media_loop():
+    while not STOP.is_set():
+        try:
+            flush_media_once()
+        except Exception as error:
+            logging.warning("Media queue: %s", type(error).__name__)
+        STOP.wait(1)
+
+
 def handle(update):
     if "callback_query" in update:
         q = update["callback_query"]
@@ -322,8 +438,35 @@ def handle(update):
         return
     if text == "/cancel":
         STATE["revisions"].pop(str(uid), None)
+        STATE.get("media_drafts", {}).pop(str(uid), None)
         save()
         acknowledge(cid, "Доработка отменена.")
+        return
+    formats = {"/format_square": "1:1", "/format_portrait": "4:5", "/format_wide": "16:9"}
+    if text in formats:
+        ratio = formats[text]
+        with STATE_LOCK:
+            STATE.setdefault("image_formats", {})[str(uid)] = ratio
+            if str(uid) in STATE.get("media_drafts", {}):
+                STATE["media_drafts"][str(uid)]["aspect_ratio"] = ratio
+                STATE["media_drafts"][str(uid)]["updated_at"] = time.time()
+            save()
+        acknowledge(cid, "Формат для следующих изображений: " + ratio + ". Теперь отправьте задачу или фотографии с подписью.")
+        return
+    if text in {"/image_style", "/image_collage"}:
+        acknowledge(cid, "Фото теперь участвуют в самой генерации: AI естественно вписывает их в общую композицию. Отправьте одно фото или альбом с описанием задачи.")
+        return
+    if m.get("photo") or m.get("document", {}).get("mime_type") in {"image/jpeg", "image/png"}:
+        receive_photo(m, update["update_id"])
+        return
+    if text and not text.startswith("/") and str(uid) in STATE.get("media_drafts", {}):
+        with STATE_LOCK:
+            draft = STATE["media_drafts"][str(uid)]
+            draft["caption"] = text
+            draft["updated_at"] = time.time()
+            if str(uid) in STATE.get("revisions", {}):
+                draft["revision"] = STATE["revisions"][str(uid)].copy()
+            save()
         return
     if str(uid) in STATE["revisions"] and text and not text.startswith("/"):
         pending = STATE["revisions"][str(uid)]
@@ -334,6 +477,7 @@ def handle(update):
                 **pending,
                 "action": "revise",
                 "comment": text,
+                "aspect_ratio": STATE.get("image_formats", {}).get(str(uid), ""),
                 "update_id": update["update_id"],
             },
         )
@@ -386,6 +530,7 @@ def handle(update):
             "user_id": uid,
             "chat_id": cid,
             "text": text,
+            "aspect_ratio": STATE.get("image_formats", {}).get(str(uid), ""),
             "update_id": update["update_id"],
         },
     )
@@ -532,6 +677,10 @@ def main():
                 {"command": "companies", "description": "Выбрать компанию"},
                 {"command": "status", "description": "Последние задачи"},
                 {"command": "help", "description": "Как пользоваться"},
+                {"command": "format_square", "description": "Картинки 1:1 — квадрат"},
+                {"command": "format_portrait", "description": "Картинки 4:5 — вертикаль для ленты"},
+                {"command": "format_wide", "description": "Картинки 16:9 — широкий формат"},
+                {"command": "cancel", "description": "Отменить текущую доработку или загрузку фото"},
             ]
         },
     )
@@ -549,6 +698,7 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: STOP.set())
     threading.Thread(target=outbox_loop, daemon=True).start()
+    threading.Thread(target=media_loop, daemon=True).start()
     updates_loop()
 
 

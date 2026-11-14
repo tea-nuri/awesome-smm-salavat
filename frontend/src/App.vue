@@ -65,6 +65,76 @@ const state = ref(null),
   companyMenu = ref(false);
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
 const schedule = ref({ request: "", next_run: "", every_seconds: 0 });
+const taskPhotos = ref([]), revisionPhotos = ref([]), revisionScope = ref("all"), uploadingPhotos = ref(false);
+const taskRatio = ref("1:1"), revisionRatio = ref("1:1");
+const taskLogo = ref(""), revisionLogo = ref("");
+const taskStyles = ref([]), revisionStyles = ref([]);
+const branding = ref({ logo_asset_id: "", style_assets: [], style_notes: "", emoji_source: "references", emoji_pack: "" });
+async function uploadBrandFiles(event, target) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  const companyID = current.value, postID = selected.value?.id;
+  const styles = target === "company-style" ? branding.value.style_assets : target === "task-style" ? taskStyles.value : revisionStyles.value;
+  if (target.endsWith("style") && styles.length + files.length > 8) { notify("Можно добавить до 8 примеров стиля"); return; }
+  uploadingPhotos.value = true;
+  try {
+    for (const file of files) {
+      if (!["image/jpeg", "image/png"].includes(file.type) || file.size > 12 * 1024 * 1024) throw new Error("Выберите JPG или PNG до 12 МБ");
+      const response = await fetch("/api/assets?company_id=" + encodeURIComponent(companyID), { method: "POST", body: file, headers: { ...headers(), "Content-Type": file.type, "X-File-Name": encodeURIComponent(file.name) } });
+      const asset = await response.json();
+      if (!response.ok) throw new Error(asset.error || "Не удалось загрузить файл");
+      if (current.value !== companyID || (target.startsWith("revision") && selected.value?.id !== postID)) throw new Error("Открытая компания или материал изменились. Добавьте файл заново");
+      if (target.endsWith("style")) styles.push(asset.id);
+      else if (target === "company-logo") branding.value.logo_asset_id = asset.id;
+      else if (target === "task-logo") taskLogo.value = asset.id;
+      else revisionLogo.value = asset.id;
+      if (target.startsWith("revision")) revisionScope.value = "image";
+    }
+  } catch (err) { notify(err.message); }
+  finally { uploadingPhotos.value = false; }
+}
+const imageFormats = [
+  { value: "1:1", label: "Квадрат", shape: "square" },
+  { value: "4:5", label: "Вертикаль", shape: "portrait" },
+  { value: "16:9", label: "Широкий", shape: "wide" },
+];
+function clearPhotos(target) {
+  for (const photo of target.value) URL.revokeObjectURL(photo.preview);
+  target.value = [];
+}
+function removePhoto(target, index) {
+  URL.revokeObjectURL(target.value[index].preview);
+  target.value.splice(index, 1);
+}
+function removeTaskPhoto(index) { removePhoto(taskPhotos, index); }
+function removeRevisionPhoto(index) { removePhoto(revisionPhotos, index); }
+async function addPhotos(event, revision = false) {
+  const target = revision ? revisionPhotos : taskPhotos;
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (target.value.length + files.length > 6) { notify("Можно приложить до 6 фотографий"); return; }
+  const companyID = current.value;
+  const postID = revision ? selected.value?.id : null;
+  uploadingPhotos.value = true;
+  try {
+    for (const file of files) {
+      if (!["image/jpeg", "image/png"].includes(file.type) || file.size > 12 * 1024 * 1024) throw new Error("Выберите JPG или PNG не больше 12 МБ");
+      const response = await fetch("/api/assets?company_id=" + encodeURIComponent(companyID), {
+        method: "POST", body: file,
+        headers: { ...headers(), "Content-Type": file.type, "X-File-Name": encodeURIComponent(file.name) },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Не удалось загрузить фото");
+      if (current.value !== companyID) throw new Error("Компания изменилась. Добавьте фото в выбранную компанию заново");
+      if (revision && selected.value?.id !== postID) throw new Error("Материал изменился. Откройте его и добавьте фото заново");
+      target.value.push({ id: result.id, name: file.name, preview: URL.createObjectURL(file) });
+      if (revision) revisionScope.value = "image";
+    }
+  } catch (err) { notify(err.message); }
+  finally { uploadingPhotos.value = false; }
+}
+watch(current, () => { clearPhotos(taskPhotos); clearPhotos(revisionPhotos); taskLogo.value = ""; revisionLogo.value = ""; taskStyles.value = []; revisionStyles.value = []; });
+watch(() => selected.value?.id, () => { clearPhotos(revisionPhotos); revisionScope.value = "all"; revisionLogo.value = ""; revisionStyles.value = []; revisionRatio.value = selected.value?.aspect_ratio || "1:1"; });
 let poll, toastTimer;
 const headers = () => ({
   "Content-Type": "application/json",
@@ -95,7 +165,7 @@ async function refresh() {
     }
     if (selected.value) {
       selected.value =
-        data.posts.find((p) => p.id === selected.value.id) || selected.value;
+        data.posts.find((p) => p.id === selected.value.id) || null;
     }
   } catch (e) {
     error.value = e.message;
@@ -133,9 +203,13 @@ const PostText = defineComponent({
     };
   },
 });
-const posts = computed(
+const companyTasks = computed(
   () => state.value?.posts.filter((p) => p.company_id === current.value) || [],
 );
+const posts = computed(() => companyTasks.value.filter((p) =>
+  !["answered", "generating", "working"].includes(p.status) &&
+  !["answer", "clarification"].includes(p.kind)
+));
 const pending = computed(() =>
   posts.value.filter((p) => p.status === "review"),
 );
@@ -143,7 +217,7 @@ const published = computed(() =>
   posts.value.filter((p) => p.status === "published"),
 );
 const working = computed(() =>
-  posts.value.filter((p) => ["working", "generating"].includes(p.status)),
+  companyTasks.value.filter((p) => ["working", "generating"].includes(p.status)),
 );
 const events = computed(() =>
   (state.value?.events.filter((e) => e.company_id === current.value) || [])
@@ -182,6 +256,7 @@ async function choose(c) {
   setForm();
 }
 function setForm() {
+  if (company.value) branding.value = { logo_asset_id: company.value.logo_asset_id || "", style_assets: [...(company.value.style_assets || [])], style_notes: company.value.style_notes || "", emoji_source: company.value.emoji_source || "references", emoji_pack: company.value.emoji_pack || "", emoji_title: company.value.emoji_title || "", emoji_items: company.value.emoji_items || [] };
   if (company.value)
     form.value = {
       ...company.value,
@@ -205,7 +280,9 @@ async function run(fn) {
 async function createTask() {
   if (!task.value.trim()) return;
   await run(async () => {
-    await api("tasks", { company_id: current.value, request: task.value });
+    await api("tasks", { company_id: current.value, request: task.value, attachments: taskPhotos.value.map(p => p.id), image_mode: "style", aspect_ratio: taskRatio.value, logo_asset_id: taskLogo.value, ...(taskStyles.value.length ? { style_assets: taskStyles.value } : {}) });
+    clearPhotos(taskPhotos);
+    taskLogo.value = ""; taskStyles.value = [];
     task.value = "";
     notify("Задача принята. Готовим материал через ChatGPT.");
     await refresh();
@@ -217,8 +294,16 @@ async function action(p, kind, comment = "") {
       revision: p.revision,
       comment,
       ...(kind === "edit" ? { title: p.title, body: editBody.value } : {}),
+      ...(kind === "revise" ? {
+        ...(revisionScope.value !== "text" && revisionPhotos.value.length ? { attachments: revisionPhotos.value.map(photo => photo.id) } : {}),
+        ...(revisionScope.value !== "text" && revisionStyles.value.length ? { style_assets: revisionStyles.value } : {}),
+        ...(revisionScope.value !== "text" && revisionLogo.value ? { logo_asset_id: revisionLogo.value } : {}),
+        image_mode: "style", image_only: revisionScope.value === "image", text_only: revisionScope.value === "text",
+        aspect_ratio: revisionScope.value === "text" ? (p.aspect_ratio || "1:1") : revisionRatio.value,
+      } : {}),
     });
     revisionComment.value = "";
+    clearPhotos(revisionPhotos); revisionLogo.value = ""; revisionStyles.value = [];
     editing.value = false;
     notify(
       kind === "approve"
@@ -234,6 +319,7 @@ async function action(p, kind, comment = "") {
 }
 async function saveCompany() {
   await run(async () => {
+    await api("companies/" + current.value + "/branding", branding.value, "PUT");
     await api(
       "companies/" + current.value,
       {
@@ -330,14 +416,14 @@ async function readFile(e) {
   notify("Текст добавлен. Сохраните настройки.");
 }
 const Creative = defineComponent({
-  props: ["name"],
+  props: { name: String, asset: Boolean },
   setup(props) {
     const src = ref("");
     let old = "";
     const load = async () => {
       if (!props.name) return;
       try {
-        const r = await fetch("/media/" + props.name, { headers: headers() });
+        const r = await fetch((props.asset ? "/api/assets/" : "/media/") + props.name, { headers: headers() });
         if (!r.ok) return;
         const b = await r.blob();
         if (old) URL.revokeObjectURL(old);
@@ -354,7 +440,7 @@ const Creative = defineComponent({
       src.value
         ? h("img", {
             src: src.value,
-            alt: "Визуал публикации",
+            alt: props.asset ? "Файл бренда" : "Визуал публикации",
             class: "creative-img",
           })
         : h("div", { class: "creative-loading" }, [h(ImageIcon, { size: 28 })]);
@@ -379,6 +465,8 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(poll);
   clearTimeout(toastTimer);
+  clearPhotos(taskPhotos);
+  clearPhotos(revisionPhotos);
 });
 const nav = [
   { id: "overview", label: "Обзор", icon: LayoutDashboard },
@@ -571,12 +659,38 @@ const nav = [
                 placeholder="Например: подготовь тёплый пост о том, почему за качеством стекла всегда стоит команда. Без выдуманных имён и событий."
                 @keydown.ctrl.enter.prevent="createTask"
               ></textarea>
+              <div class="photo-controls">
+                <label class="photo-upload"><ImageIcon :size="17" /> Свои фотографии
+                  <input type="file" accept="image/jpeg,image/png" multiple :disabled="uploadingPhotos" @change="addPhotos($event)" />
+                </label>
+                <small>{{ uploadingPhotos ? 'Загружаем…' : 'До 6 фото · JPG / PNG' }}</small>
+              </div>
+              <div v-if="taskPhotos.length" class="photo-previews">
+                <figure v-for="(photo, index) in taskPhotos" :key="photo.id"><img :src="photo.preview" :alt="photo.name" /><button type="button" :aria-label="'Убрать фото ' + (index + 1)" @click="removeTaskPhoto(index)"><X :size="13" /></button></figure>
+              </div>
+              <p v-if="taskPhotos.length" class="photo-help">AI впишет фотографии в общую композицию, согласует фон и свет.</p>
+              <fieldset class="image-format">
+                <legend>Формат изображения</legend>
+                <div class="format-options">
+                  <button v-for="format in imageFormats" :key="format.value" type="button" :class="['format-choice', { active: taskRatio === format.value }]" :aria-pressed="taskRatio === format.value" @click="taskRatio = format.value">
+                    <i :class="['format-shape', format.shape]" aria-hidden="true"></i><span><b>{{ format.value }}</b><small>{{ format.label }}</small></span>
+                  </button>
+                </div>
+                <small class="format-help">1:1 — универсальный · 4:5 — крупнее в ленте · 16:9 — для панорам</small>
+              </fieldset>
+              <details class="post-brand-overrides"><summary>Логотип и стиль для этого поста</summary>
+                <p class="field-note">По умолчанию — из настроек компании. Здесь можно заменить только для этой задачи.</p>
+                <div v-if="taskLogo" class="brand-logo-row"><Creative :name="taskLogo" asset /><button type="button" class="text-button" @click="taskLogo = ''">Использовать логотип компании</button></div>
+                <label class="photo-upload"><Upload :size="15" /> Другой логотип<input type="file" accept="image/png,image/jpeg" :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'task-logo')" /></label>
+                <div class="brand-style-previews"><figure v-for="(id, index) in taskStyles" :key="id"><Creative :name="id" asset /><button type="button" :aria-label="'Убрать пример поста ' + (index + 1)" @click="taskStyles.splice(index, 1)"><X :size="13" /></button></figure></div>
+                <label class="photo-upload"><ImageIcon :size="15" /> Примеры для этого поста<input type="file" accept="image/png,image/jpeg" multiple :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'task-style')" /></label>
+              </details>
               <div class="composer-footer">
                 <span><ShieldCheck :size="14" /> Сначала ваше одобрение</span
                 ><button
                   class="button primary"
                   @click="createTask"
-                  :disabled="busy || !task.trim()"
+                  :disabled="busy || uploadingPhotos || !task.trim()"
                 >
                   <LoaderCircle v-if="busy" class="spin" :size="16" /><Sparkles
                     v-else
@@ -808,6 +922,21 @@ const nav = [
               <p class="field-note">
                 Бот должен быть администратором канала с правом публикации.
               </p>
+              <section class="brand-settings-fields">
+                <h3>Визуальный стиль и эмодзи</h3>
+                <label>Логотип компании</label>
+                <p class="field-note">Будет органично включаться в каждое новое изображение. PNG с прозрачным фоном — лучший вариант.</p>
+                <div v-if="branding.logo_asset_id" class="brand-logo-row"><Creative :name="branding.logo_asset_id" asset /><button type="button" class="text-button" @click="branding.logo_asset_id = ''">Убрать логотип</button></div>
+                <label class="photo-upload"><Upload :size="16" /> {{ branding.logo_asset_id ? 'Заменить логотип' : 'Загрузить логотип' }}<input type="file" accept="image/png,image/jpeg" :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'company-logo')" /></label>
+                <label>Примеры изображений</label>
+                <p class="field-note">Загрузите до 8 примеров нужного стиля. AI будет учитывать их композицию, цвета и оформление, без переноса старых фактов.</p>
+                <div class="brand-style-previews"><figure v-for="(id, index) in branding.style_assets" :key="id"><Creative :name="id" asset /><button type="button" :aria-label="'Убрать пример ' + (index + 1)" @click="branding.style_assets.splice(index, 1)"><X :size="13" /></button></figure></div>
+                <label class="photo-upload"><ImageIcon :size="16" /> Добавить примеры стиля<input type="file" accept="image/png,image/jpeg" multiple :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'company-style')" /></label>
+                <label>Пожелания к изображениям<textarea v-model="branding.style_notes" rows="3" maxlength="6000" placeholder="Что взять из примеров: композицию, цвета, шрифты, настроение. Что не использовать." /></label>
+                <label>Эмодзи в публикациях<select v-model="branding.emoji_source"><option value="references">Из пересланных примеров компании</option><option value="pack">Выбранный Telegram-пак</option><option value="standard">Обычные эмодзи</option></select></label>
+                <template v-if="branding.emoji_source === 'pack'"><label>Ссылка или название эмодзи-пака<input v-model="branding.emoji_pack" maxlength="200" placeholder="https://t.me/addemoji/название" /></label><p class="field-note">Подойдёт ссылка «Поделиться» на набор эмодзи или его короткое название. Набор загрузится при сохранении.</p></template>
+                <p v-if="company.emoji_source === 'pack' && company.emoji_title" class="emoji-pack-status">Подключён: {{ company.emoji_title }} · {{ company.emoji_items?.length || 0 }} эмодзи</p>
+              </section>
               <label
                 >Участники компании · Telegram ID через запятую<input
                   v-model="form.members_text"
@@ -817,7 +946,7 @@ const nav = [
                 Участники получают доступ только к этой компании. Владелец и
                 администратор сохраняют доступ.
               </p>
-              <button class="button primary" :disabled="busy">
+              <button class="button primary" :disabled="busy || uploadingPhotos">
                 <Check :size="17" /> Сохранить настройки
               </button>
             </form>
@@ -1065,15 +1194,49 @@ const nav = [
               "
               class="revision-box"
             >
+              <fieldset class="revision-scope"><legend>Что доработать</legend>
+                <label><input type="radio" v-model="revisionScope" value="all" /> Текст и изображение</label>
+                <label><input type="radio" v-model="revisionScope" value="text" /> Только текст</label>
+                <label><input type="radio" v-model="revisionScope" value="image" /> Только изображение</label>
+              </fieldset>
+              <p v-if="revisionScope === 'text'" class="photo-help">Текущее изображение сохранится. Новая генерация картинки не запускается.</p>
               <label
                 >Вернуть AI на доработку<textarea
                   v-model="revisionComment"
                   rows="2"
                   placeholder="Что изменить в материале?"
                 ></textarea></label
-              ><button
+              >
+              <div v-if="revisionScope !== 'text'" class="revision-visual-controls">
+              <div class="photo-controls">
+                <label class="photo-upload"><ImageIcon :size="16" /> Добавить свои фото
+                  <input type="file" accept="image/jpeg,image/png" multiple :disabled="uploadingPhotos" @change="addPhotos($event, true)" />
+                </label>
+                <small>{{ uploadingPhotos ? 'Загружаем…' : 'Одно фото или несколько' }}</small>
+              </div>
+              <div v-if="revisionPhotos.length" class="photo-previews">
+                <figure v-for="(photo, index) in revisionPhotos" :key="photo.id"><img :src="photo.preview" :alt="photo.name" /><button type="button" :aria-label="'Убрать фото ' + (index + 1)" @click="removeRevisionPhoto(index)"><X :size="13" /></button></figure>
+              </div>
+              <p v-if="revisionPhotos.length" class="photo-help">Фото участвуют в самой генерации нового изображения.</p>
+              <fieldset class="image-format">
+                <legend>Формат изображения</legend>
+                <div class="format-options">
+                  <button v-for="format in imageFormats" :key="format.value" type="button" :class="['format-choice', { active: revisionRatio === format.value }]" :aria-pressed="revisionRatio === format.value" @click="revisionRatio = format.value; revisionScope = 'image'">
+                    <i :class="['format-shape', format.shape]" aria-hidden="true"></i><span><b>{{ format.value }}</b><small>{{ format.label }}</small></span>
+                  </button>
+                </div>
+              </fieldset>
+
+              <details class="post-brand-overrides"><summary>Заменить логотип или примеры</summary>
+                <div v-if="revisionLogo" class="brand-logo-row"><Creative :name="revisionLogo" asset /><button type="button" class="text-button" @click="revisionLogo = ''">Отменить замену</button></div>
+                <label class="photo-upload"><Upload :size="15" /> Логотип для доработки<input type="file" accept="image/png,image/jpeg" :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'revision-logo')" /></label>
+                <div class="brand-style-previews"><figure v-for="(id, index) in revisionStyles" :key="id"><Creative :name="id" asset /><button type="button" :aria-label="'Убрать пример доработки ' + (index + 1)" @click="revisionStyles.splice(index, 1)"><X :size="13" /></button></figure></div>
+                <label class="photo-upload"><ImageIcon :size="15" /> Примеры для доработки<input type="file" accept="image/png,image/jpeg" multiple :disabled="uploadingPhotos" @change="uploadBrandFiles($event, 'revision-style')" /></label>
+              </details>
+              </div>
+              <button
                 class="button secondary"
-                :disabled="busy || !revisionComment.trim()"
+                :disabled="busy || uploadingPhotos || (revisionScope === 'text' && !revisionComment.trim()) || (!revisionComment.trim() && !revisionPhotos.length && revisionRatio === (selected.aspect_ratio || '1:1') && revisionScope !== 'image' && !revisionLogo && !revisionStyles.length)"
                 @click="action(selected, 'revise', revisionComment)"
               >
                 <RotateCcw :size="15" /> Доработать
@@ -1088,7 +1251,7 @@ const nav = [
               <RotateCcw :size="16" /> Повторить генерацию</button
             ><small class="detail-note"
               >{{ fmt(selected.created_at) }} · {{ selected.provider
-              }}<br />Изображение: {{ selected.image_source || 'AI-макет · PNG-карточка' }}</small
+              }}<br />Изображение: {{ selected.image_source || 'AI-макет · PNG-карточка' }} · {{ selected.aspect_ratio || '1:1' }}</small
             >
           </div>
         </div>
