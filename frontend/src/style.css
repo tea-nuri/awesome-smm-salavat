@@ -1912,3 +1912,31 @@ h1 { font-family: "Intro", sans-serif; font-weight: 900; letter-spacing: -.6px; 
 .revision-scope legend { color:#52737a; font-size:11px; margin-bottom:9px; }
 .revision-scope label { display:flex; align-items:center; gap:6px; font-size:11px; margin:0; }
 .revision-scope input { width:14px; height:14px; padding:0; margin:0; accent-color:#196c7f; }
+
+.clarification-notice { width:100%; display:flex; align-items:center; gap:13px; text-align:left; border:1px solid #e9d9b8; background:#fffbf2; border-radius:12px; padding:14px 17px; margin:0 0 22px; color:#765c29; }
+.clarification-notice > span:nth-child(2) { flex:1; }.clarification-notice b,.clarification-notice small { display:block; }
+.clarification-notice b { font-size:13px; }.clarification-notice small { font-size:11px; margin-top:4px; line-height:1.5; }
+.task-dialog-panel { min-width:0; align-self:start; scroll-margin-top:24px; }
+.task-dialog-panel .panel-title { margin-bottom:16px; }.task-dialog-panel .panel-title h3 { flex:1; }
+.task-dialog-empty { padding:35px 8px; text-align:center; color:#789096; }.task-dialog-empty > svg { color:#89aeb5; margin-bottom:13px; }
+.task-dialog-empty h4 { color:#285055; font-size:14px; margin:0 0 8px; }.task-dialog-empty p { font-size:12px; line-height:1.7; margin:0; }
+.task-picker { display:block; font-size:10px; color:#789096; }.task-picker select { margin:6px 0 15px; padding:9px 11px; font-size:11px; text-overflow:ellipsis; }
+.task-progress { display:flex; align-items:center; gap:11px; padding:13px 14px; background:#edf5f6; border:1px solid #dbe9eb; border-radius:10px; color:#196c7f; }
+.task-progress > svg { flex-shrink:0; }.task-progress strong { display:block; font-size:12px; line-height:1.5; }.task-progress small { display:block; font-size:10px; margin-top:3px; opacity:.8; }
+.task-progress.waiting { background:#fffbf2; border-color:#e9d9b8; color:#8b6928; }.task-progress.failed { background:#fff4f4; border-color:#eed4d4; color:#a65d5d; }
+.task-progress-track { height:3px; background:#e4eef0; overflow:hidden; margin:8px 4px 0; border-radius:4px; }
+.task-progress-track span { display:block; height:100%; width:32%; background:#4e9aaa; border-radius:4px; animation:task-activity 1.7s ease-in-out infinite; }
+@keyframes task-activity { from { transform:translateX(-110%); } to { transform:translateX(420%); } }
+.task-dialog-timeline { margin:17px 0; max-height:330px; overflow:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:10px; padding:1px 5px 3px 0; }
+.task-turn { border:1px solid #e1e9ea; border-radius:11px; padding:11px 13px; background:#fff; }
+.task-turn.user { background:#f3f7f7; margin-left:22px; }.task-turn.assistant { margin-right:12px; }.task-turn.question { border-color:#e9d9b8; }
+.task-turn > small { display:block; font-size:9px; color:#789096; margin-bottom:5px; }.task-turn.question > small { color:#9a782d; }
+.task-turn > p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.65; color:#39575d; margin:0; }
+.task-reply { padding-top:2px; }.task-reply > label { display:block; font-size:11px; color:#52737a; margin-bottom:7px; }
+.task-reply textarea { font-size:12px; line-height:1.6; min-height:100px; }.task-reply > .button { margin-top:10px; width:100%; justify-content:center; }
+.task-reply-error,.task-failure > p { color:#a65d5d; font-size:11px; line-height:1.6; margin:8px 0; }
+.task-open-result { width:100%; justify-content:center; margin:3px 0 7px; }.task-failure .button { margin-top:8px; }
+.task-journal { margin-top:20px; padding-top:14px; border-top:1px solid #e4ebec; }
+.task-journal summary { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:10px; color:#789096; margin-bottom:10px; }
+@media(max-width:620px) { .task-dialog-panel { scroll-margin-top:12px; }.task-dialog-timeline { max-height:300px; }.task-turn.user { margin-left:14px; }.clarification-notice { padding:12px; gap:10px; }.clarification-notice small { font-size:10px; } }
+@media(prefers-reduced-motion:reduce) { .task-progress-track span { animation:none; width:100%; opacity:.5; } }

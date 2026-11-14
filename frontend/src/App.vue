@@ -3,6 +3,7 @@ import {
   ref,
   computed,
   onMounted,
+  nextTick,
   onUnmounted,
   watch,
   defineComponent,
@@ -66,6 +67,9 @@ const state = ref(null),
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
 const schedule = ref({ request: "", next_run: "", every_seconds: 0 });
 const taskPhotos = ref([]), revisionPhotos = ref([]), revisionScope = ref("all"), uploadingPhotos = ref(false);
+const activeTaskIDs = ref({}), replyDrafts = ref({}), replySending = ref(false), replyError = ref("");
+const taskPanel = ref(null), dialogTimeline = ref(null), clockNow = ref(Date.now());
+let clockTimer;
 const taskRatio = ref("1:1"), revisionRatio = ref("1:1");
 const taskLogo = ref(""), revisionLogo = ref("");
 const taskStyles = ref([]), revisionStyles = ref([]);
@@ -204,12 +208,58 @@ const PostText = defineComponent({
   },
 });
 const companyTasks = computed(
-  () => state.value?.posts.filter((p) => p.company_id === current.value) || [],
+  () => (state.value?.tasks || state.value?.posts || []).filter((p) => p.company_id === current.value),
 );
-const posts = computed(() => companyTasks.value.filter((p) =>
+const posts = computed(() => (state.value?.posts || []).filter((p) => p.company_id === current.value &&
   !["answered", "generating", "working"].includes(p.status) &&
   !["answer", "clarification"].includes(p.kind)
 ));
+const awaitingTasks = computed(() => companyTasks.value.filter(t => t.awaiting_input));
+const activeTask = computed(() => companyTasks.value.find(t => t.id === activeTaskIDs.value[current.value]) || companyTasks.value.find(t => t.awaiting_input || ["generating", "working"].includes(t.status)) || companyTasks.value[0]);
+function taskStatusLabel(t) {
+  if (t.awaiting_input) return "Нужен ваш ответ";
+  if (t.status === "answered") return "Ответ готов";
+  return labels[t.status] || "Задача принята";
+}
+function taskStageLabel(t) {
+  if (t.status === "generating") return "Задача в очереди";
+  if (t.status !== "working") return taskStatusLabel(t);
+  return { text: "AI готовит текст", image: "AI создаёт изображение", export: "Собираем готовый материал" }[t.stage] || "AI работает над задачей";
+}
+function taskElapsed(t) {
+  const seconds = Math.max(0, Math.floor((clockNow.value - new Date(t.started_at || t.created_at).getTime()) / 1000));
+  return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+}
+async function focusTask(id) {
+  if (id) activeTaskIDs.value[current.value] = id;
+  tab.value = "overview";
+  await nextTick();
+  taskPanel.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function openTaskPost(id) {
+  const post = state.value.posts.find(p => p.id === id);
+  if (post) selected.value = post;
+}
+async function replyToAI() {
+  const thread = activeTask.value, text = (replyDrafts.value[thread?.id] || "").trim();
+  if (!thread || !text || replySending.value) return;
+  replySending.value = true; replyError.value = "";
+  try {
+    const updated = await api(`tasks/${thread.id}/reply`, { revision: thread.revision, text });
+    state.value.tasks = (state.value.tasks || []).map(t => t.id === updated.id ? updated : t);
+    replyDrafts.value[thread.id] = "";
+    await refresh();
+  } catch (err) { replyError.value = err.message; await refresh(); }
+  finally { replySending.value = false; }
+}
+async function retryTask(thread) {
+  await run(async () => { await api(`posts/${thread.id}/retry`, { revision: thread.revision }); await refresh(); });
+}
+watch(() => activeTask.value?.id, () => { replyError.value = ""; });
+watch(() => `${activeTask.value?.id}:${activeTask.value?.dialog?.length}`, async () => {
+  await nextTick();
+  if (dialogTimeline.value) dialogTimeline.value.scrollTop = dialogTimeline.value.scrollHeight;
+});
 const pending = computed(() =>
   posts.value.filter((p) => p.status === "review"),
 );
@@ -280,12 +330,15 @@ async function run(fn) {
 async function createTask() {
   if (!task.value.trim()) return;
   await run(async () => {
-    await api("tasks", { company_id: current.value, request: task.value, attachments: taskPhotos.value.map(p => p.id), image_mode: "style", aspect_ratio: taskRatio.value, logo_asset_id: taskLogo.value, ...(taskStyles.value.length ? { style_assets: taskStyles.value } : {}) });
+    const created = await api("tasks", { company_id: current.value, request: task.value, attachments: taskPhotos.value.map(p => p.id), image_mode: "style", aspect_ratio: taskRatio.value, logo_asset_id: taskLogo.value, ...(taskStyles.value.length ? { style_assets: taskStyles.value } : {}) });
+    state.value.tasks = [created, ...(state.value.tasks || []).filter(t => t.id !== created.id)];
+    activeTaskIDs.value[current.value] = created.id;
     clearPhotos(taskPhotos);
     taskLogo.value = ""; taskStyles.value = [];
     task.value = "";
-    notify("Задача принята. Готовим материал через ChatGPT.");
+    notify("Задача принята. Прогресс и уточнения — в диалоге с AI.");
     await refresh();
+    await focusTask(created.id);
   });
 }
 async function action(p, kind, comment = "") {
@@ -315,6 +368,7 @@ async function action(p, kind, comment = "") {
             : "Изменения сохранены.",
     );
     await refresh();
+    if (["revise", "retry"].includes(kind)) { selected.value = null; await focusTask(p.id); }
   });
 }
 async function saveCompany() {
@@ -457,6 +511,7 @@ onMounted(async () => {
     }
     await refresh();
     poll = setInterval(refresh, 4000);
+    clockTimer = setInterval(() => { clockNow.value = Date.now(); }, 1000);
   } catch (e) {
     error.value = e.message;
     loading.value = false;
@@ -464,6 +519,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   clearInterval(poll);
+  clearInterval(clockTimer);
   clearTimeout(toastTimer);
   clearPhotos(taskPhotos);
   clearPhotos(revisionPhotos);
@@ -576,6 +632,9 @@ const nav = [
             <X :size="16" />
           </button>
         </div>
+        <button v-if="awaitingTasks.length" class="clarification-notice" @click="focusTask(awaitingTasks[0].id)">
+          <span class="mini-icon"><CircleHelp :size="19" /></span><span><b>AI ждёт вашего ответа</b><small>{{ awaitingTasks.length === 1 ? 'Откройте уточнение и продолжите задачу прямо здесь.' : 'Задач с уточнениями: ' + awaitingTasks.length }}</small></span><ArrowRight :size="18" />
+        </button>
         <template v-if="tab === 'overview'">
           <div class="page-heading">
             <div>
@@ -723,35 +782,32 @@ const nav = [
                 </button>
               </div>
             </section>
-            <section class="panel activity-panel">
-              <div class="panel-title">
-                <h3>Сейчас в работе</h3>
-                <span class="subtle-live"
-                  ><span class="online-dot"></span> LIVE</span
-                >
-              </div>
-              <div v-if="!events.length" class="empty-small">
-                События появятся после первой задачи
-              </div>
-              <div
-                v-for="event in events.slice(0, 4)"
-                :key="event.id"
-                class="activity-row"
-              >
-                <div class="activity-symbol" :class="event.kind">
-                  <Check v-if="event.kind === 'published'" :size="14" /><Clock3
-                    v-else-if="event.kind === 'schedule'"
-                    :size="14"
-                  /><Sparkles v-else :size="14" />
+            <section ref="taskPanel" class="panel task-dialog-panel" aria-label="Диалог с AI">
+              <div class="panel-title"><span class="mini-icon"><Bot :size="18" /></span><h3>Диалог с AI</h3><span class="subtle-live"><span class="online-dot"></span> LIVE</span></div>
+              <div v-if="!activeTask" class="task-dialog-empty"><CircleHelp :size="28" /><h4>От задачи до готового поста</h4><p>Создайте материал — здесь появятся прогресс, вопросы AI и готовый результат. На уточнения можно отвечать прямо в кабинете.</p></div>
+              <template v-else>
+                <label class="task-picker">Ваши задачи<select :value="activeTask.id" @change="activeTaskIDs[current] = $event.target.value"><option v-for="thread in companyTasks" :key="thread.id" :value="thread.id">{{ taskStatusLabel(thread) }} · {{ (thread.dialog?.[0]?.text || thread.title || thread.request).slice(0, 72) }}</option></select></label>
+                <div class="task-progress" :class="{ waiting: activeTask.awaiting_input, failed: activeTask.status === 'failed' }" role="status" aria-live="polite">
+                  <LoaderCircle v-if="['generating', 'working'].includes(activeTask.status)" class="spin" :size="20" /><CircleHelp v-else-if="activeTask.awaiting_input || activeTask.status === 'failed'" :size="20" /><Check v-else :size="20" />
+                  <div><strong>{{ taskStageLabel(activeTask) }}</strong><small v-if="['generating', 'working'].includes(activeTask.status)">{{ activeTask.status === 'generating' ? 'Ожидаем запуск' : 'В работе' }} · {{ taskElapsed(activeTask) }}</small><small v-else>{{ fmt(activeTask.updated_at) }}</small></div>
                 </div>
-                <div>
-                  <p>{{ event.text }}</p>
-                  <small>{{ fmt(event.at) }}</small>
+                <div v-if="['generating', 'working'].includes(activeTask.status)" class="task-progress-track" aria-hidden="true"><span></span></div>
+                <div ref="dialogTimeline" class="task-dialog-timeline" role="log" aria-label="История диалога">
+                  <article v-for="(message, index) in activeTask.dialog" :key="activeTask.id + ':' + index" :class="['task-turn', message.role, { question: message.kind === 'clarification' }]">
+                    <small>{{ message.role === 'user' ? 'Вы' : message.kind === 'clarification' ? 'AI · Уточнение' : 'AI' }}</small>
+                    <template v-if="message.kind === 'post'"><p>Материал подготовлен и отправлен на согласование.</p></template><p v-else>{{ message.text }}</p>
+                  </article>
                 </div>
-              </div>
-              <div class="activity-note">
-                <ShieldCheck :size="15" /> Все действия сохраняются в журнале
-              </div>
+                <form v-if="activeTask.can_reply" class="task-reply" @submit.prevent="replyToAI">
+                  <label :for="'task-reply-' + activeTask.id">{{ activeTask.awaiting_input ? 'Ваш ответ на уточнение' : 'Продолжить диалог' }}</label>
+                  <textarea :id="'task-reply-' + activeTask.id" v-model="replyDrafts[activeTask.id]" rows="3" maxlength="12000" placeholder="Напишите детали или уточните задачу…" :disabled="replySending" @keydown.ctrl.enter.prevent="replyToAI"></textarea>
+                  <p v-if="replyError" class="task-reply-error" role="alert">{{ replyError }}</p>
+                  <button class="button primary" :disabled="replySending || !(replyDrafts[activeTask.id] || '').trim()"><LoaderCircle v-if="replySending" :size="15" class="spin" /><Send v-else :size="15" /> Ответить и продолжить</button>
+                </form>
+                <div v-if="activeTask.status === 'failed'" class="task-failure"><p role="alert">{{ activeTask.error }}</p><button class="button secondary" :disabled="busy" @click="retryTask(activeTask)"><RotateCcw :size="15" /> Повторить задачу</button></div>
+                <button v-if="['review', 'approved', 'published', 'rejected', 'publishing', 'uncertain'].includes(activeTask.status)" class="button secondary task-open-result" @click="openTaskPost(activeTask.id)"><FileText :size="16" /> Открыть материал <ArrowRight :size="16" /></button>
+              </template>
+              <details v-if="events.length" class="task-journal"><summary><Activity :size="14" /> Журнал событий</summary><div v-for="event in events.slice(0, 4)" :key="event.id" class="activity-row"><div class="activity-symbol" :class="event.kind"><Sparkles :size="14" /></div><div><p>{{ event.text }}</p><small>{{ fmt(event.at) }}</small></div></div></details>
             </section>
           </div>
           <section class="recent-section">
