@@ -5,6 +5,7 @@ import re
 import urllib.parse
 import urllib.request, urllib.error
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 INTERNAL = os.environ["INTERNAL_TOKEN"]
@@ -14,6 +15,15 @@ DATA = Path(os.getenv("BOT_DATA_DIR", "data/bot"))
 DATA.mkdir(parents=True, exist_ok=True)
 STOP = threading.Event()
 STATE_LOCK = threading.RLock()
+
+
+def publication_time(value):
+    if not value:
+        return "после одобрения"
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return moment.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%Y в %H:%M МСК")
+
+
 try:
     STATE = json.loads((DATA / "state.json").read_text())
 except FileNotFoundError:
@@ -418,7 +428,7 @@ def handle(update):
                 "Что изменить в материале? Пришлите следующим сообщением. /cancel — отменить.",
             )
             return
-        api(
+        result = api(
             "action",
             {
                 "user_id": uid,
@@ -430,7 +440,7 @@ def handle(update):
         )
         answer_callback(
             q["id"],
-            "Одобрено, отправляю в канал"
+            ("Одобрено, публикация " + publication_time(result.get("scheduled_at")) if result and result.get("scheduled_at") else "Одобрено, отправляю в канал")
             if action == "approve"
             else "Материал отклонён",
         )
@@ -653,7 +663,7 @@ def outbox_loop():
                         ]
                     }
                     deliver_post(chat, post, company)
-                    stamp = post.get("scheduled_at") or "после одобрения"
+                    stamp = publication_time(post.get("scheduled_at"))
                     send(
                         chat,
                         f"На согласовании · версия {rev}\n{company['name']} → {company.get('channel') or 'канал не подключён'}\nВремя публикации: {stamp}\n\n{post['title']}\n\nПубликация только после вашего одобрения.",

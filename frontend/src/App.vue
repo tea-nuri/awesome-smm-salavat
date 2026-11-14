@@ -65,7 +65,27 @@ const state = ref(null),
   companyModal = ref(false),
   companyMenu = ref(false);
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
-const schedule = ref({ request: "", next_run: "", every_seconds: 0 });
+const emptySchedule = () => ({ request: "", next_run: "", repeat: "daily", publish_time: "10:00", weekday: 1 });
+const schedule = ref(emptySchedule()), editingScheduleID = ref("");
+const calendarSchedule = computed(() => ["daily", "weekly"].includes(schedule.value.repeat));
+const weekdays = [{value:1,label:"Понедельник"},{value:2,label:"Вторник"},{value:3,label:"Среда"},{value:4,label:"Четверг"},{value:5,label:"Пятница"},{value:6,label:"Суббота"},{value:0,label:"Воскресенье"}];
+const weekLabels = ["По воскресеньям", "По понедельникам", "По вторникам", "По средам", "По четвергам", "По пятницам", "По субботам"];
+const fmtMoscow = date => new Date(date).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) + " МСК";
+function scheduleLabel(s) {
+  if (s.frequency === "daily") return `Каждый день в ${s.publish_time} · МСК`;
+  if (s.frequency === "weekly") return `${weekLabels[s.weekday]} в ${s.publish_time} · МСК`;
+  const seconds = s.every_seconds || s.every_minutes * 60;
+  return seconds ? (seconds === 3600 ? "Каждый час" : `Каждые ${seconds} сек.`) : "Однократно";
+}
+function nextScheduledPublication(s) {
+  return [s.next_publication_at, ...(state.value?.posts || []).filter(p => p.schedule_id === s.id && ["review", "approved", "generating", "working"].includes(p.status)).map(p => p.scheduled_at)].filter(date => date && new Date(date).getTime() > clockNow.value).sort()[0];
+}
+function editSchedule(s) {
+  editingScheduleID.value = s.id;
+  const date = new Date(s.next_run), local = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+  schedule.value = { request:s.request, next_run:local, repeat:s.frequency || String(s.every_seconds || s.every_minutes * 60 || 0), publish_time:s.publish_time || "10:00", weekday:s.weekday ?? 1 };
+}
+function resetSchedule() { schedule.value=emptySchedule();editingScheduleID.value=""; }
 const taskPhotos = ref([]), revisionPhotos = ref([]), revisionScope = ref("all"), uploadingPhotos = ref(false);
 const activeTaskIDs = ref({}), replyDrafts = ref({}), replySending = ref(false), replyError = ref("");
 const taskPanel = ref(null), dialogTimeline = ref(null), clockNow = ref(Date.now());
@@ -167,7 +187,7 @@ async function addPhotos(event, revision = false) {
   } catch (err) { notify(err.message); }
   finally { uploadingPhotos.value = false; }
 }
-watch(current, () => { clearPhotos(taskPhotos); clearPhotos(revisionPhotos); taskLogo.value = ""; revisionLogo.value = ""; taskStyles.value = []; revisionStyles.value = []; });
+watch(current, () => { clearPhotos(taskPhotos); clearPhotos(revisionPhotos); taskLogo.value = ""; revisionLogo.value = ""; taskStyles.value = []; revisionStyles.value = []; resetSchedule(); });
 watch(() => selected.value?.id, () => { clearPhotos(revisionPhotos); revisionScope.value = "all"; revisionLogo.value = ""; revisionStyles.value = []; revisionRatio.value = selected.value?.aspect_ratio || "1:1"; });
 let poll, toastTimer;
 const headers = () => ({
@@ -373,7 +393,7 @@ async function createTask() {
 }
 async function action(p, kind, comment = "") {
   await run(async () => {
-    await api(`posts/${p.id}/${kind}`, {
+    const result = await api(`posts/${p.id}/${kind}`, {
       revision: p.revision,
       comment,
       ...(kind === "edit" ? { title: p.title, body: editBody.value } : {}),
@@ -390,7 +410,7 @@ async function action(p, kind, comment = "") {
     editing.value = false;
     notify(
       kind === "approve"
-        ? "Одобрено. Отправляем в канал."
+        ? result.scheduled_at ? `Одобрено. Публикация: ${fmtMoscow(result.scheduled_at)}` : "Одобрено. Отправляем в канал."
         : kind === "reject"
           ? "Публикация отклонена."
           : kind === "revise"
@@ -431,15 +451,19 @@ async function addCompany() {
 }
 async function addSchedule() {
   await run(async () => {
-    if (!schedule.value.next_run) throw new Error("Выберите время");
-    await api("schedules", {
+    if (!calendarSchedule.value && !schedule.value.next_run) throw new Error("Выберите время первого запуска");
+    const existing = schedules.value.find(s => s.id === editingScheduleID.value);
+    await api(editingScheduleID.value ? "schedules/" + editingScheduleID.value : "schedules", {
       company_id: current.value,
-      ...schedule.value,
-      next_run: new Date(schedule.value.next_run).toISOString(),
-      every_seconds: Number(schedule.value.every_seconds),
-    });
-    schedule.value = { request: "", next_run: "", every_seconds: 0 };
-    notify("Задача запланирована");
+      request: schedule.value.request,
+      enabled: existing?.enabled ?? true,
+      frequency: calendarSchedule.value ? schedule.value.repeat : "",
+      publish_time: schedule.value.publish_time, weekday: Number(schedule.value.weekday), time_zone: "Europe/Moscow",
+      ...(calendarSchedule.value ? {} : {next_run: new Date(schedule.value.next_run).toISOString()}),
+      every_seconds: calendarSchedule.value ? 0 : Number(schedule.value.repeat), every_minutes: 0,
+    }, editingScheduleID.value ? "PUT" : "POST");
+    resetSchedule();
+    notify("Расписание сохранено");
     await refresh();
   });
 }
@@ -450,6 +474,7 @@ async function toggleSchedule(s, enabled = !s.enabled) {
       "schedules/" + s.id,
       {
         enabled,
+        frequency: s.frequency || "", publish_time:s.publish_time, weekday:s.weekday, time_zone:s.time_zone,
         every_seconds: seconds,
         next_run: new Date(
           Date.now() + Math.max(seconds, 30) * 1000,
@@ -458,7 +483,7 @@ async function toggleSchedule(s, enabled = !s.enabled) {
       "PUT",
     );
     await refresh();
-    notify(enabled ? "Автоподготовка включена" : "Автоподготовка на паузе");
+    notify(enabled ? "Расписание включено" : "Подготовка и публикация по расписанию на паузе");
   });
 }
 async function pauseAllSchedules() {
@@ -469,6 +494,7 @@ async function pauseAllSchedules() {
         "schedules/" + s.id,
         {
           enabled: false,
+          frequency:s.frequency || "", publish_time:s.publish_time, weekday:s.weekday, time_zone:s.time_zone,
           every_seconds: seconds,
           next_run: new Date(
             Date.now() + Math.max(seconds, 30) * 1000,
@@ -478,12 +504,13 @@ async function pauseAllSchedules() {
       );
     }
     await refresh();
-    notify("Автоподготовка остановлена");
+    notify("Подготовка и публикация по расписаниям остановлены");
   });
 }
 async function removeSchedule(s) {
   await run(async () => {
     await api("schedules/" + s.id, null, "DELETE");
+    if (editingScheduleID.value === s.id) resetSchedule();
     await refresh();
     notify("Расписание удалено");
   });
@@ -1077,12 +1104,12 @@ const nav = [
             <div>
               <div class="eyebrow">РАБОТАЕТ, ДАЖЕ КОГДА ВЫ ЗАНЯТЫ</div>
               <h1>Всему своё время<span>.</span></h1>
-              <p>AI сам начнёт задачу и пришлёт результат на согласование.</p>
+              <p>Выберите время публикации. AI подготовит пост заранее и пришлёт на согласование.</p>
             </div>
           </div>
           <div class="settings-layout">
             <form class="panel settings-form" @submit.prevent="addSchedule">
-              <h3>Новая регулярная задача</h3>
+              <h3>{{ editingScheduleID ? "Изменить расписание" : "Новая регулярная задача" }}</h3>
               <label
                 >Что подготовить?<textarea
                   v-model="schedule.request"
@@ -1091,28 +1118,27 @@ const nav = [
                   placeholder="Подготовь полезный пост для нашей аудитории"
                 ></textarea></label
               ><label
-                >Первый запуск<input
-                  type="datetime-local"
-                  v-model="schedule.next_run"
-                  required /></label
-              ><label
-                >Повторять<select v-model="schedule.every_seconds">
-                  <option :value="0">Один раз</option>
-                  <option :value="30">
+                >Повторять<select v-model="schedule.repeat">
+                  <option value="0">Один раз</option>
+                  <option value="30">
                     Каждые 30 секунд — для демонстрации
                   </option>
-                  <option :value="3600">Каждый час</option>
-                  <option :value="86400">Каждый день</option>
-                  <option :value="604800">Каждую неделю</option>
+                  <option value="3600">Каждый час</option>
+                  <option value="daily">Каждый день</option>
+                  <option value="weekly">Каждую неделю</option>
                 </select></label
               >
-              <p class="field-note">
-                Время указано в часовом поясе вашего устройства. Запуск готовит
-                материал; публикация требует одобрения.
+              <label v-if="schedule.repeat === 'weekly'">День публикации<select v-model="schedule.weekday"><option v-for="day in weekdays" :key="day.value" :value="day.value">{{ day.label }}</option></select></label>
+              <label v-if="calendarSchedule">Время публикации<input v-model="schedule.publish_time" type="time" required /></label>
+              <label v-else>Первый запуск<input v-model="schedule.next_run" type="datetime-local" required /></label>
+              <p v-if="calendarSchedule" class="field-note">
+                Московское время (UTC+3). Подготовка начинается за 15 минут. Одобрите пост до назначенного времени — он выйдет по расписанию. Без одобрения публикации не будет.
               </p>
+              <p v-else class="field-note">Время первого запуска — в часовом поясе вашего устройства. Запуск готовит материал; после одобрения он публикуется.</p>
               <button class="button primary" :disabled="busy">
-                <CalendarClock :size="17" /> Запланировать
+                <CalendarClock :size="17" /> {{ editingScheduleID ? "Сохранить расписание" : "Запланировать" }}
               </button>
+              <button v-if="editingScheduleID" type="button" class="button secondary" @click="resetSchedule">Отменить изменения</button>
             </form>
             <section class="panel schedule-list">
               <h3>Ваши расписания</h3>
@@ -1127,12 +1153,13 @@ const nav = [
                     >{{
                       s.enabled
                         ? "Активно"
-                        : s.every_seconds || s.every_minutes
+                        : s.frequency || s.every_seconds || s.every_minutes
                           ? "На паузе"
                           : "Выполнено"
                     }}</span
                   >
                   <div class="schedule-controls">
+                    <button class="icon-button" :disabled="busy" @click="editSchedule(s)" title="Изменить расписание"><Settings2 :size="16" /></button>
                     <button
                       class="button secondary"
                       :disabled="busy"
@@ -1152,16 +1179,9 @@ const nav = [
                   </div>
                 </div>
                 <p>{{ s.request }}</p>
-                <small
-                  ><Clock3 :size="13" /> {{ fmt(s.next_run) }} ·
-                  {{
-                    s.every_seconds || s.every_minutes
-                      ? s.every_seconds
-                        ? `каждые ${s.every_seconds} сек.`
-                        : `каждые ${s.every_minutes} мин.`
-                      : "однократно"
-                  }}</small
-                >
+                <small><Clock3 :size="13" /> {{ scheduleLabel(s) }}</small>
+                <small v-if="s.enabled && s.frequency && nextScheduledPublication(s)">Ближайшая публикация: {{ fmtMoscow(nextScheduledPublication(s)) }}</small>
+                <small v-else-if="s.enabled">Следующий запуск: {{ fmt(s.next_run) }}</small>
               </article>
             </section>
           </div></template
@@ -1231,6 +1251,7 @@ const nav = [
               {{ company?.channel || "КАНАЛ НЕ ПОДКЛЮЧЁН" }}
             </div>
             <h2>{{ selected.title || "Материал готовится" }}</h2>
+            <p v-if="selected.scheduled_at" class="field-note"><Clock3 :size="14" /> Публикация: {{ fmtMoscow(selected.scheduled_at) }} · требуется одобрение</p>
             <PostText v-if="!editing" :post="selected" />
             <textarea
               v-else
@@ -1258,7 +1279,7 @@ const nav = [
                 :disabled="busy"
                 @click="action(selected, 'approve')"
               >
-                <Check :size="17" /> Одобрить и опубликовать</button
+                <Check :size="17" /> {{ selected.scheduled_at ? "Одобрить и запланировать" : "Одобрить и опубликовать" }}</button
               ><button
                 v-if="!editing"
                 class="button secondary"

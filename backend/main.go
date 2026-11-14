@@ -91,15 +91,20 @@ type Outbox struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 type Schedule struct {
-	ID           string    `json:"id"`
-	CompanyID    string    `json:"company_id"`
-	Request      string    `json:"request"`
-	NextRun      time.Time `json:"next_run"`
-	EveryMinutes int       `json:"every_minutes"`
-	Enabled      bool      `json:"enabled"`
-	UserID       int64     `json:"user_id"`
-	ChatID       int64     `json:"chat_id"`
-	EverySeconds int       `json:"every_seconds"`
+	ID                string     `json:"id"`
+	CompanyID         string     `json:"company_id"`
+	Request           string     `json:"request"`
+	NextRun           time.Time  `json:"next_run"`
+	EveryMinutes      int        `json:"every_minutes"`
+	Enabled           bool       `json:"enabled"`
+	UserID            int64      `json:"user_id"`
+	ChatID            int64      `json:"chat_id"`
+	EverySeconds      int        `json:"every_seconds"`
+	Frequency         string     `json:"frequency,omitempty"`
+	PublishTime       string     `json:"publish_time,omitempty"`
+	Weekday           int        `json:"weekday"`
+	TimeZone          string     `json:"time_zone,omitempty"`
+	NextPublicationAt *time.Time `json:"next_publication_at,omitempty"`
 }
 type State struct {
 	Sources   map[string]*KnowledgeSource `json:"sources,omitempty"`
@@ -159,6 +164,7 @@ func main() {
 		log.Fatal(e)
 	}
 	go a.worker()
+	go a.publicationClock()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]any{"ok": true, "service": "awesome-smm"})
@@ -688,8 +694,13 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "schedules" && r.Method == "POST" {
 		var s Schedule
-		if decode(r, &s) != nil || s.NextRun.Before(now()) || s.Request == "" || s.EveryMinutes < 0 || s.EveryMinutes > 525600 || s.EverySeconds < 0 || s.EverySeconds > 31536000 || (s.EverySeconds > 0 && s.EverySeconds < 30) || len(s.Request) > 12000 {
+		if decode(r, &s) != nil || strings.TrimSpace(s.Request) == "" || len(s.Request) > 12000 {
 			fail(w, 400, "Укажите задачу и будущее время запуска")
+			return
+		}
+		s.Enabled = true
+		if err := configureSchedule(&s, now()); err != nil {
+			fail(w, 400, err.Error())
 			return
 		}
 		if !a.allowed(u, a.state.Companies[s.CompanyID]) {
@@ -713,15 +724,21 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, "Не найдено")
 			return
 		}
-		var in Schedule
-		if decode(r, &in) != nil || in.NextRun.Before(now()) || in.EverySeconds < 0 || in.EverySeconds > 31536000 || (in.EverySeconds > 0 && in.EverySeconds < 30) {
-			fail(w, 400, "Минимальный интервал — 30 секунд")
+		in := *old
+		if decode(r, &in) != nil {
+			fail(w, 400, "Проверьте настройки расписания")
 			return
 		}
-		old.NextRun = in.NextRun
-		old.EverySeconds = in.EverySeconds
-		old.EveryMinutes = 0
-		old.Enabled = in.Enabled
+		if err := configureSchedule(&in, now()); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		in.ID, in.CompanyID, in.UserID, in.ChatID = old.ID, old.CompanyID, old.UserID, old.ChatID
+		calendarChanged := old.Frequency != in.Frequency || old.PublishTime != in.PublishTime || old.Weekday != in.Weekday || old.TimeZone != in.TimeZone
+		*old = in
+		if calendarChanged {
+			a.retimeSchedulePosts(old, now())
+		}
 		if !in.Enabled {
 			for _, p := range a.state.Posts {
 				if p.ScheduleID == sid && (p.Status == "generating" || p.Status == "working") {
@@ -730,7 +747,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		a.event(old.CompanyID, "Обновлено расписание: интервал "+strconv.Itoa(in.EverySeconds)+" сек.", "schedule")
+		a.event(old.CompanyID, "Обновлено расписание публикаций", "schedule")
 		a.persist()
 		reply(w, 200, old)
 		return
@@ -823,6 +840,14 @@ func (a *App) action(u identity, pid, action string, rev int, comment, title, bo
 		}
 		if c.Channel == "" {
 			return nil, errors.New("Сначала подключите канал в настройках компании")
+		}
+		if s := a.state.Schedules[p.ScheduleID]; s != nil && s.calendar() && p.ScheduledAt != nil && now().Sub(*p.ScheduledAt) > publicationGrace {
+			next, err := a.nextFreePublication(s, now(), p.ID)
+			if err != nil {
+				return nil, err
+			}
+			p.ScheduledAt = &next
+			p.Revision++
 		}
 		p.ApprovedRevision = p.Revision
 		p.Status = "approved"
@@ -1256,49 +1281,8 @@ func (a *App) worker() {
 }
 func (a *App) tick() {
 	a.mu.Lock()
-	changed := false
 	t := now()
-	for _, s := range a.state.Schedules {
-		if s.Enabled && !s.NextRun.After(t) {
-			interval := s.EverySeconds
-			if interval == 0 {
-				interval = s.EveryMinutes * 60
-			}
-			inFlight := false
-			for _, p := range a.state.Posts {
-				if p.ScheduleID == s.ID && (p.Status == "working" || p.Status == "generating") {
-					inFlight = true
-					break
-				}
-			}
-			if inFlight {
-				s.NextRun = t.Add(time.Duration(max(interval, 30)) * time.Second)
-				changed = true
-				continue
-			}
-			p := a.newPost(s.CompanyID, s.Request, s.UserID, s.ChatID, nil)
-			p.ScheduleID = s.ID
-			a.event(s.CompanyID, "Автономный запуск задачи по расписанию", "schedule")
-			if interval > 0 {
-				s.NextRun = t.Add(time.Duration(interval) * time.Second)
-			} else {
-				s.Enabled = false
-			}
-			changed = true
-		}
-	}
-	for _, p := range a.state.Posts {
-		if !p.isConversation() && p.Status == "approved" && p.ApprovedRevision == p.Revision && (p.ScheduledAt == nil || !p.ScheduledAt.After(t)) {
-			c := a.state.Companies[p.CompanyID]
-			if c == nil || c.Channel == "" {
-				continue
-			}
-			p.Status = "publishing"
-			p.UpdatedAt = t
-			a.state.Outbox = append(a.state.Outbox, &Outbox{ID: id(), Kind: "publish", PostID: p.ID, CompanyID: p.CompanyID, ChatID: p.ChatID, CreatedAt: t})
-			changed = true
-		}
-	}
+	changed := a.dispatchSchedules(t)
 	var target *Post
 	for _, p := range a.state.Posts {
 		if p.Status == "generating" && (target == nil || p.CreatedAt.Before(target.CreatedAt)) {
