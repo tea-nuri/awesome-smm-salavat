@@ -547,7 +547,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if c := a.active(u); c != nil {
 			active = c.ID
 		}
-		reply(w, 200, map[string]any{"user": u, "companies": cs, "posts": ps, "tasks": tasks, "sources": sources, "events": es, "schedules": ss, "active_company": active, "provider": "ChatGPT · Codex", "image_provider": "GPT Image · генерация по референсам", "public_url": a.publicURL})
+		reply(w, 200, map[string]any{"user": u, "companies": cs, "posts": ps, "tasks": tasks, "sources": sources, "events": es, "schedules": ss, "active_company": active, "provider": map[string]string{"": "ChatGPT · Codex", "codex": "ChatGPT · Codex", "ollama": "Ollama", "deepseek": "DeepSeek · API", "gemini": "Gemini · API"}[a.state.Control.Provider], "image_provider": "GPT Image · генерация по референсам", "public_url": a.publicURL})
 		return
 	}
 	if path == "companies" && r.Method == "POST" {

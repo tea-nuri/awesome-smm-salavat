@@ -69,7 +69,7 @@ const state = ref(null),
   editBody = ref(""),
   toast = ref(""),
   companyModal = ref(false),
-  companyMenu = ref(false);
+  companyMenu = ref(false), moreMenu = ref(false);
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
 const emptySchedule = () => ({ request: "", next_run: "", repeat: "daily", publish_time: "10:00", weekday: 1, platform:'telegram' });
 const schedule = ref(emptySchedule()), editingScheduleID = ref("");
@@ -595,12 +595,14 @@ const nav = [
   { id: "content", label: "Публикации", icon: Layers },
   { id: "marketing", label: "Маркетинг", icon: Sparkles },
   { id: "analytics", label: "Аналитика", icon: BarChart3 },
-  { id: "inbox", label: "Обращения", icon: MessageSquare },
   { id: "schedule", label: "Расписание", icon: CalendarClock },
   { id: "settings", label: "Компания", icon: Building2 },
   { id: "control", label: "Лимиты и доступы", icon: Wallet },
   { id: "guide", label: "Инструкция", icon: BookOpen },
 ];
+const primaryNav = nav.filter(n=>["overview","content","schedule","settings"].includes(n.id));
+const extraNav = nav.filter(n=>!["overview","content","schedule","settings"].includes(n.id));
+function selectSection(id){tab.value=id;moreMenu.value=false;companyMenu.value=false}
 async function composeMarketing(brief){task.value=brief;tab.value='overview';await nextTick();document.querySelector('.task-panel textarea')?.focus()}
 async function operationsFocusTask(id){await refresh();await focusTask(id)}
 async function checkMaterial(p){await run(async()=>{await api(`operations/${p.company_id}/checks/${p.id}`,{revision:p.revision});await refresh();notify('Проверка текущей версии подтверждена')})}
@@ -650,7 +652,7 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
       </div>
       <nav>
         <button
-          v-for="item in nav"
+          v-for="item in primaryNav"
           :class="{ active: tab === item.id }"
           @click="tab = item.id"
         >
@@ -661,11 +663,11 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
             >{{ pending.length }}</span
           >
         </button>
-      </nav>
+      <button :class="{active:extraNav.some(n=>n.id===tab)}" @click="moreMenu=!moreMenu;companyMenu=false"><Menu :size="20"/><span>Ещё</span></button></nav>
       <div class="sidebar-bottom">
         <div class="connection">
-          <span class="online-dot"></span><b>ChatGPT подключён</b
-          ><small>Через существующий аккаунт</small>
+          <span class="online-dot"></span><b>{{state.provider||"ChatGPT · Codex"}}</b
+          ><small>Исполнитель текста</small>
         </div>
         <div class="account">
           <span class="user-avatar">{{
@@ -688,6 +690,7 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
           <b>{{ nav.find((n) => n.id === tab)?.label }}</b>
         </div>
         <div class="header-right">
+          <button class="icon-button more-menu-toggle" aria-label="Дополнительные разделы" :aria-expanded="moreMenu" @click="moreMenu=!moreMenu;companyMenu=false"><Menu :size="22"/></button>
           <span class="live-indicator"
             ><span class="online-dot"></span> Система активна</span
           ><button
@@ -1205,7 +1208,7 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
             </section>
           </div></template
         >
-        <OperationsPanel v-if="['marketing','analytics','inbox','control'].includes(tab)" :key="current" :mode="tab" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="operationsFocusTask" @compose="composeMarketing" @updated="refresh"/>
+        <OperationsPanel v-if="['marketing','analytics','control'].includes(tab)" :key="current" :mode="tab" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="operationsFocusTask" @compose="composeMarketing" @updated="refresh"/>
         <OperationsPanel v-if="tab==='settings'&&companySection!=='profile'" :key="current+'-rules'" mode="settings" :section="companySection" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="focusTask" @updated="refresh"/>
         <GuidePanel v-if="tab==='guide'"/>
         <footer>
@@ -1215,9 +1218,10 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
         </footer>
       </div>
     </main>
+    <template v-if="moreMenu"><button class="more-menu-backdrop" aria-label="Закрыть меню" @click="moreMenu=false"></button><nav class="more-menu" aria-label="Дополнительные разделы" @keydown.esc="moreMenu=false"><div class="more-menu-heading"><b>Ещё в кабинете</b><button class="icon-button" aria-label="Закрыть меню разделов" @click="moreMenu=false"><X :size="18"/></button></div><button v-for="item in extraNav" :key="item.id" :class="{active:tab===item.id}" @click="selectSection(item.id)"><component :is="item.icon" :size="19"/><span>{{item.label}}</span><ChevronRight :size="15"/></button></nav></template>
     <nav class="mobile-nav">
       <button
-        v-for="item in nav"
+        v-for="item in primaryNav"
         :class="{ active: tab === item.id }"
         @click="tab = item.id"
       >

@@ -255,11 +255,9 @@ func (a *App) internalConnectionsAPI(w http.ResponseWriter, r *http.Request, pat
 		if a.state.Inbox[key] != nil {
 			continue
 		}
-		entry := &InboxEntry{ID: key, CompanyID: in.CompanyID, Platform: in.Platform, PostID: comment.PostID, ExternalID: comment.ExternalID, ParentExternalID: comment.ParentExternalID, Author: truncate(comment.Author, 150), Text: truncate(comment.Text, 12000), Revision: 1, Status: "new", CreatedAt: now(), UpdatedAt: now()}
+		entry := &InboxEntry{ID: key, CompanyID: in.CompanyID, Platform: in.Platform, PostID: comment.PostID, ExternalID: comment.ExternalID, ParentExternalID: comment.ParentExternalID, Author: "", Text: "", Revision: 1, Status: "new", CreatedAt: now(), UpdatedAt: now()}
 		a.state.Inbox[key] = entry
-		if a.companyOperations(in.CompanyID).AutoReplies {
-			a.createMarketingJob(in.CompanyID, "reply", "Подготовь ответ на обращение", entry.ID, a.state.Companies[in.CompanyID].OwnerID)
-		}
+
 	}
 	a.persist()
 	reply(w, 200, map[string]bool{"ok": true})

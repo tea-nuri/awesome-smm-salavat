@@ -29,13 +29,28 @@ func (a *App) executeText(ctx context.Context, p Post, prompt, jobDir, outFile s
 		return err
 	}
 	a.mu.Lock()
-	provider, model := a.state.Control.Provider, a.state.Control.Model
+	provider, model := "codex", ""
+	for _, v := range a.state.Usage {
+		if v.ID == uid {
+			provider, model = v.Provider, v.Model
+			break
+		}
+	}
+	key := ""
+	if provider == "deepseek" || provider == "gemini" {
+		key, _ = a.connectionSecret("ai", provider)
+	}
 	a.mu.Unlock()
+	if provider == "deepseek" || provider == "gemini" {
+		return a.executeRemoteText(ctx, p, prompt, outFile, uid, provider, model, key)
+	}
 	if provider == "ollama" {
 		return a.executeOllama(ctx, p, prompt, outFile, uid, model)
 	}
 	args := []string{"exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "features.shell_tool=false", "--json", "-C", jobDir, "-o", outFile}
-	args = append(args, a.modelArguments(false)...)
+	if model != "" {
+		args = append(args, "-m", model)
+	}
 	args = append(args, a.authArguments()...)
 	for _, photo := range a.taskImagePaths(p) {
 		args = append(args, "-i", photo)
@@ -74,18 +89,22 @@ func (a *App) executeOllama(ctx context.Context, p Post, prompt, outFile, uid, m
 	defer res.Body.Close()
 	var result struct {
 		Response string `json:"response"`
-		Input    int64  `json:"prompt_eval_count"`
-		Output   int64  `json:"eval_count"`
+		Input    *int64 `json:"prompt_eval_count"`
+		Output   *int64 `json:"eval_count"`
 		Error    string `json:"error"`
 	}
 	err = json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&result)
 	if res.StatusCode != 200 || result.Response == "" || err != nil {
 		err = errors.New("Локальная модель не вернула результат")
 	}
-	event, _ := json.Marshal(map[string]any{"type": "turn.completed", "usage": map[string]int64{"input_tokens": result.Input, "output_tokens": result.Output}})
-	a.finishUsage(uid, string(event), err)
-	if err != nil {
-		return err
+	events := ""
+	if result.Input != nil && result.Output != nil {
+		event, _ := json.Marshal(map[string]any{"type": "turn.completed", "usage": map[string]int64{"input_tokens": *result.Input, "output_tokens": *result.Output}})
+		events = string(event)
 	}
-	return os.WriteFile(outFile, []byte(result.Response), 0600)
+	if err == nil {
+		err = os.WriteFile(outFile, []byte(result.Response), 0600)
+	}
+	a.finishUsage(uid, events, err)
+	return err
 }

@@ -28,30 +28,7 @@ func replyNeedsHuman(e *InboxEntry, result AIResult) bool {
 	return false
 }
 func (a *App) queueReply(e *InboxEntry, automatic bool) error {
-	ops := a.companyOperations(e.CompanyID)
-	if strings.TrimSpace(e.Draft) == "" || e.Status == "sent" || e.Status == "sending" || e.Status == "uncertain" {
-		return errors.New("Ответ сейчас нельзя отправить")
-	}
-	if automatic {
-		if !ops.AutoReplies || ops.AutoReplyDailyLimit <= 0 {
-			return errors.New("Автоответы запрещены")
-		}
-		count := 0
-		for _, entry := range a.state.Inbox {
-			if entry.CompanyID == e.CompanyID && (entry.Status == "sent" || entry.Status == "sending") && entry.UpdatedAt.Format("2006-01-02") == now().Format("2006-01-02") {
-				count++
-			}
-		}
-		if count >= ops.AutoReplyDailyLimit {
-			return errors.New("Достигнут суточный лимит автоответов")
-		}
-	}
-	e.ApprovedRevision = e.Revision
-	e.Status = "sending"
-	e.UpdatedAt = now()
-	a.state.Outbox = append(a.state.Outbox, &Outbox{ID: id(), Kind: "reply", ReplyID: e.ID, CompanyID: e.CompanyID, ChatID: e.ChatID, Text: e.Draft, CreatedAt: now()})
-	a.event(e.CompanyID, "Согласован ответ на обращение", "reply")
-	return nil
+	return errors.New("Ответы на обращения отключены")
 }
 func (a *App) inboxAPI(w http.ResponseWriter, r *http.Request, u identity, cid string, parts []string) {
 	if len(parts) != 5 || r.Method != "POST" {
@@ -160,7 +137,7 @@ func (a *App) internalSocialAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		decode(r, &in)
 		entry := a.state.Inbox[in.ID]
-		ok := entry != nil && entry.Status == "sending" && entry.ApprovedRevision == entry.Revision
+		ok := false
 		out := map[string]any{"ok": ok, "entry": entry}
 		if entry != nil && (entry.Platform == "vk" || entry.Platform == "max") {
 			out["connection"] = a.privateConnection(entry.CompanyID, entry.Platform)
@@ -221,7 +198,7 @@ func (a *App) internalSocialAPI(w http.ResponseWriter, r *http.Request, path str
 		reply(w, 200, map[string]bool{"accepted": false})
 		return true
 	}
-	e := &InboxEntry{ID: key, CompanyID: cid, ChatID: in.ChatID, MessageID: in.MessageID, Author: truncate(in.Author, 150), Text: in.Text, Revision: 1, Status: "new", CreatedAt: now(), UpdatedAt: now()}
+	e := &InboxEntry{ID: key, CompanyID: cid, ChatID: in.ChatID, MessageID: in.MessageID, Author: "", Text: "", Revision: 1, Status: "new", CreatedAt: now(), UpdatedAt: now()}
 	for _, parent := range []int64{in.ThreadID, in.ReplyToMessageID} {
 		if p := a.state.DiscussionPosts[fmt.Sprintf("%d:%d", in.ChatID, parent)]; p != "" {
 			e.PostID = p
@@ -243,12 +220,6 @@ func (a *App) internalSocialAPI(w http.ResponseWriter, r *http.Request, path str
 			}
 		}
 		a.storeMetric(cid, MetricRecord{PostID: e.PostID, Date: now().Format("2006-01-02"), Comments: &count, Source: "telegram"})
-	}
-	a.event(cid, "Новое обращение в обсуждении канала", "comment")
-	c := a.state.Companies[cid]
-	a.notify(cid, c.OwnerID, "Новое обращение в обсуждении канала. Откройте раздел «Обращения» в кабинете.")
-	if a.companyOperations(cid).AutoReplies {
-		a.createMarketingJob(cid, "reply", "Подготовь ответ на новое обращение", e.ID, c.OwnerID)
 	}
 	a.persist()
 	reply(w, 200, map[string]bool{"accepted": true})

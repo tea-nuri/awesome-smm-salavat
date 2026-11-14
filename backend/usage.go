@@ -143,6 +143,14 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 	defer a.mu.Unlock()
 	a.initOperations()
 	policy := a.companyOperations(p.CompanyID).Usage
+	provider := a.state.Control.Provider
+	if provider == "" || kind == "image" {
+		provider = "codex"
+	}
+	if (provider == "deepseek" || provider == "gemini") && !a.state.Control.Providers[provider].KeySet {
+		return "", errors.New("Добавьте API-ключ в разделе «Лимиты и доступы»")
+	}
+
 	if a.state.Control.AIPaused || policy.Paused {
 		return "", errors.New("Генерация приостановлена администратором")
 	}
@@ -156,8 +164,10 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 			if v.Kind == "image" {
 				images++
 			}
-			tokens += v.InputTokens + v.OutputTokens
-			if !v.Measured {
+			if v.Provider != "codex" {
+				tokens += v.InputTokens + v.OutputTokens
+			}
+			if v.Provider != "codex" && !v.Measured {
 				unknownTokens = true
 			}
 		}
@@ -168,10 +178,10 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 	if kind == "image" && policy.MonthlyImages > 0 && images >= policy.MonthlyImages {
 		return "", errors.New("Достигнут месячный лимит изображений компании")
 	}
-	if policy.MonthlyTokens > 0 && tokens >= policy.MonthlyTokens {
+	if provider != "codex" && policy.MonthlyTokens > 0 && tokens >= policy.MonthlyTokens {
 		return "", errors.New("Достигнут порог учтённых токенов компании")
 	}
-	if policy.MonthlyTokens > 0 && unknownTokens {
+	if provider != "codex" && policy.MonthlyTokens > 0 && unknownTokens {
 		return "", errors.New("Есть вызовы с неизвестным расходом токенов. Для продолжения измените токен-порог и используйте лимит числа вызовов или расхода подписки")
 	}
 	threshold := policy.StopAtPercent
@@ -179,7 +189,7 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 		threshold = a.state.Control.StopAtPercent
 	}
 	q := a.state.Control.Quota
-	if threshold > 0 {
+	if provider == "codex" && threshold > 0 {
 		if q == nil || q.Error != "" || current.Sub(q.At) > 5*time.Minute {
 			return "", errors.New("Для контроля расхода нужен свежий снимок лимитов подписки. Обновите его в разделе «Лимиты и доступы»")
 		}
@@ -194,11 +204,7 @@ func (a *App) beginUsage(p Post, kind string) (string, error) {
 			}
 		}
 	}
-	provider := a.state.Control.Provider
-	if provider == "" || kind == "image" {
-		provider = "codex"
-	}
-	v := &UsageRecord{ID: id(), CompanyID: p.CompanyID, PostID: p.ID, Revision: p.Revision, Kind: kind, Provider: provider, Model: a.state.Control.Model, Status: "running", StartedAt: current}
+	v := &UsageRecord{ID: id(), CompanyID: p.CompanyID, PostID: p.ID, Revision: p.Revision, Kind: kind, Provider: provider, Model: a.providerModel(provider), Status: "running", StartedAt: current}
 	a.state.Usage = append(a.state.Usage, v)
 	a.persist()
 	return v.ID, nil
@@ -244,8 +250,8 @@ func (a *App) finishUsage(uid, events string, err error) {
 func (a *App) modelArguments(image bool) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !image && a.state.Control.Model != "" {
-		return []string{"-m", a.state.Control.Model}
+	if !image && a.providerModel("codex") != "" {
+		return []string{"-m", a.providerModel("codex")}
 	}
 	return nil
 }
@@ -282,7 +288,7 @@ func (a *App) updateControl(w http.ResponseWriter, r *http.Request, u identity) 
 		Model         string  `json:"model"`
 		StopAtPercent float64 `json:"stop_at_percent"`
 	}
-	if decode(r, &in) != nil || in.StopAtPercent < 0 || in.StopAtPercent > 100 || (in.Provider != "" && in.Provider != "codex" && in.Provider != "ollama") || (in.Model != "" && !modelName.MatchString(in.Model)) {
+	if decode(r, &in) != nil || in.StopAtPercent < 0 || in.StopAtPercent > 100 || (in.Provider != "" && in.Provider != "codex" && in.Provider != "ollama" && in.Provider != "deepseek" && in.Provider != "gemini") || (in.Model != "" && !modelName.MatchString(in.Model)) {
 		fail(w, 400, "Проверьте настройки AI")
 		return
 	}
@@ -313,7 +319,17 @@ func (a *App) updateControl(w http.ResponseWriter, r *http.Request, u identity) 
 			a.state.Control.DisabledAdmins = append(a.state.Control.DisabledAdmins, uid)
 		}
 	}
-	a.state.Control.AIPaused, a.state.Control.Provider, a.state.Control.Model, a.state.Control.StopAtPercent = in.AIPaused, in.Provider, in.Model, in.StopAtPercent
+	provider := in.Provider
+	if provider == "" {
+		provider = "codex"
+	}
+	a.state.Control.AIPaused, a.state.Control.Provider, a.state.Control.StopAtPercent = in.AIPaused, provider, in.StopAtPercent
+	cfg := a.state.Control.Providers[provider]
+	if cfg.Model == "" && in.Model != "" {
+		cfg.Model = in.Model
+		a.state.Control.Providers[provider] = cfg
+	}
+	a.state.Control.Model = cfg.Model
 	a.event("", "Доступы и настройки AI изменил пользователь "+strconv.FormatInt(u.ID, 10), "access")
 	a.persist()
 	reply(w, 200, a.state.Control)
