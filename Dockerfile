@@ -21,7 +21,7 @@ WORKDIR /app
 COPY --from=backend /server /app/server
 COPY --from=frontend /src/dist /app/frontend/dist
 COPY bot/ /app/bot/
-ENV DATA_DIR=/data FRONTEND_DIR=/app/frontend/dist AI_WORK_DIR=/ai PYTHON_BIN=/opt/venv/bin/python RENDER_SCRIPT=/app/bot/render_card.py CODEX_HOME=/codex HOME=/home/app LISTEN_ADDR=0.0.0.0:8080 BOT_DATA_DIR=/data/bot
+ENV DATA_DIR=/data FRONTEND_DIR=/app/frontend/dist AI_WORK_DIR=/ai PYTHON_BIN=/opt/venv/bin/python RENDER_SCRIPT=/app/bot/render_card.py BRAND_ASSETS=/app/frontend/dist/assets/salavat CODEX_HOME=/codex HOME=/home/app LISTEN_ADDR=0.0.0.0:8080 BOT_DATA_DIR=/data/bot
 USER app
 EXPOSE 8080
 CMD ["/app/server"]

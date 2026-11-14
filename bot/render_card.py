@@ -1,8 +1,8 @@
 """Deterministic PNG card rendered from the AI's art direction, no external API."""
 
-import json, math, re, sys
+import json, math, os, re, sys
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 def font(size, bold=False):
@@ -34,8 +34,54 @@ def wrap(draw, text, ft, width):
     return lines
 
 
+def render_salavat(data, destination):
+    assets = Path(os.getenv("BRAND_ASSETS", str(Path(__file__).resolve().parent.parent / "frontend/public/assets/salavat")))
+    background = Path(data.get("background", ""))
+    if not background.is_file():
+        raise ValueError("An actual generated image is required for the brand card")
+    with Image.open(background) as source:
+        im = ImageOps.fit(source.convert("RGB"), (1080, 1080), method=Image.Resampling.LANCZOS)
+    d = ImageDraw.Draw(im)
+    # The wordmark is exported from the client's Illustrator artboard, never retyped.
+    d.rectangle((0, 0, 1080, 180), fill="white")
+    with Image.open(assets / "logo.png") as logo:
+        logo = logo.convert("RGBA")
+        logo.thumbnail((232, 126), Image.Resampling.LANCZOS)
+        im.paste(logo, (54, 28), logo)
+    small = ImageFont.truetype(str(assets / "avenir-demi.ttf"), 18)
+    rubric = str(data.get("rubric") or "В КОМАНДЕ")[:30].upper()
+    d.text((1024, 88), "В КОМАНДЕ", font=small, fill="#196C7F", anchor="rm")
+    d.line((54, 179, 1026, 179), fill="#DDE1E1", width=2)
+    # Light editorial field recalls the white collage edges in supplied references.
+    d.polygon([(0, 702), (260, 684), (440, 702), (715, 670), (1080, 691), (1080, 1080), (0, 1080)], fill="white")
+    d.text((58, 722), rubric, font=small, fill="#196C7F")
+    title = str(data.get("title") or "СИЛА НАШЕЙ КОМАНДЫ").upper()
+    for size in range(64, 31, -2):
+        heading = ImageFont.truetype(str(assets / "intro.ttf"), size)
+        lines = wrap(d, title, heading, 964)
+        if len(lines) <= 2 and all(d.textlength(line, font=heading) <= 964 for line in lines):
+            break
+    if len(lines) > 2:
+        raise ValueError("Brand headline is too long for the approved layout")
+    y = 774
+    for line in lines:
+        d.text((54, y), line, font=heading, fill="#285055")
+        y += size + 15
+    body_font = ImageFont.truetype(str(assets / "avenir-regular.ttf"), 29)
+    subtitle = str(data.get("subtitle") or "Люди. Производство. Наша общая история.")[:100]
+    for line in wrap(d, subtitle, body_font, 950)[:2]:
+        d.text((57, y + 16), line, font=body_font, fill="#52737A")
+        y += 39
+    d.line((58, 1047, 1024, 1047), fill="#C1D0D3", width=2)
+    Path(destination).parent.mkdir(parents=True, exist_ok=True)
+    im.save(destination, "PNG")
+
+
 def main():
     data = json.load(sys.stdin)
+    if data.get("brand_profile") == "salavatsteklo":
+        render_salavat(data, sys.argv[1])
+        return
     accent = data.get("accent", "#6948ff")
     if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
         accent = "#6948ff"

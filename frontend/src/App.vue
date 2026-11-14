@@ -45,8 +45,8 @@ const tg = window.Telegram?.WebApp;
 tg?.ready();
 tg?.expand();
 try {
-  tg?.setHeaderColor("#f6f7f9");
-  tg?.setBackgroundColor("#f6f7f9");
+  tg?.setHeaderColor("#f3f6f6");
+  tg?.setBackgroundColor("#f3f6f6");
 } catch {}
 const state = ref(null),
   current = ref(""),
@@ -106,6 +106,33 @@ async function refresh() {
 const company = computed(() =>
   state.value?.companies.find((c) => c.id === current.value),
 );
+const isSalavat = computed(() => company.value?.brand_profile === "salavatsteklo");
+async function useSalavatTemplate() {
+  const templates = await api("brand-templates");
+  form.value = { ...form.value, ...templates.salavatsteklo };
+}
+const PostText = defineComponent({
+  props: ["post"],
+  setup(props) {
+    return () => {
+      const post = props.post;
+      const lines = (post.body || post.request || "").split("\n");
+      return h("div", { class: "post-full" }, lines.map((line, i) => {
+        const quote = post.quote && line && post.quote.includes(line);
+        const parts = [];
+        let tail = line;
+        for (const phrase of post.emphasis || []) {
+          if (!phrase || !tail.includes(phrase)) continue;
+          const at = tail.indexOf(phrase);
+          parts.push(tail.slice(0, at), h("strong", phrase));
+          tail = tail.slice(at + phrase.length);
+        }
+        parts.push(tail);
+        return h(quote ? "blockquote" : "div", { class: { "post-hook": i === 0, "post-space": !line, "post-hashtag": line.startsWith("#") } }, parts);
+      }));
+    };
+  },
+});
 const posts = computed(
   () => state.value?.posts.filter((p) => p.company_id === current.value) || [],
 );
@@ -377,12 +404,9 @@ const nav = [
   </div>
   <div v-else class="app-shell">
     <aside class="sidebar">
-      <a class="brand" @click="tab = 'overview'"
-        ><span class="brand-mark"><Sparkles :size="20" /></span>awesome<span
-          class="brand-dot"
-          >.</span
-        ></a
-      >
+      <a class="brand" @click="tab = 'overview'" aria-label="Контент-студия — главная">
+        <span class="studio-mark"><Layers :size="24" /></span><span class="studio-name">Контент<br />студия</span>
+      </a>
       <span class="sidebar-caption">ВАШ AI-МАРКЕТОЛОГ</span>
       <div class="company-switch" @click="companyMenu = !companyMenu">
         <span class="company-avatar">{{
@@ -467,9 +491,9 @@ const nav = [
         <template v-if="tab === 'overview'">
           <div class="page-heading">
             <div>
-              <div class="eyebrow">МЕНЬШЕ РУТИНЫ. БОЛЬШЕ СМЫСЛА.</div>
-              <h1>Маркетинг на автопилоте<span>.</span></h1>
-              <p>Ваш AI-маркетолог готовит контент. Вы задаёте направление.</p>
+              <div class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+              <h1>Ваш контент<span>.</span></h1>
+              <p>Ставьте задачи, согласовывайте материалы и планируйте публикации.</p>
             </div>
             <button
               class="button secondary desktop-only"
@@ -478,39 +502,6 @@ const nav = [
               <CalendarClock :size="16" /> Расписание
             </button>
           </div>
-          <section class="hero-card">
-            <div class="hero-copy">
-              <span class="hero-tag"
-                ><Sparkles :size="14" /> ВАША КОМАНДА ИЗ ОДНОГО AI</span
-              >
-              <h2>От идеи до публикации.<br />В одном диалоге.</h2>
-              <p>
-                Знает ваш бизнес, помнит контекст и приходит<br
-                  class="desktop-only"
-                />
-                за одобрением перед каждым постом.
-              </p>
-              <a
-                href="https://t.me/awesomesmm_ai"
-                target="_blank"
-                class="hero-link"
-                >Написать маркетологу <ArrowUpRight :size="17"
-              /></a>
-            </div>
-            <div class="orb-art" aria-hidden="true">
-              <div class="orb-ring r1"></div>
-              <div class="orb-ring r2"></div>
-              <div class="orb-ring r3"></div>
-              <div class="orb-core">
-                <Sparkles :size="56" stroke-width="1.4" />
-              </div>
-              <span class="floating-label f1"
-                ><ShieldCheck :size="14" /> Всё под контролем</span
-              ><span class="floating-label f2"
-                ><Zap :size="14" /> Работает за вас</span
-              ><span class="art-cross">✦</span>
-            </div>
-          </section>
           <section
             v-if="schedules.some((s) => s.enabled)"
             class="automation-banner"
@@ -577,7 +568,7 @@ const nav = [
               <textarea
                 v-model="task"
                 maxlength="12000"
-                placeholder="Например: подготовь пост о том, как наш сервис помогает бизнесу экономить время на маркетинге…"
+                placeholder="Например: подготовь тёплый пост о том, почему за качеством стекла всегда стоит команда. Без выдуманных имён и событий."
                 @keydown.ctrl.enter.prevent="createTask"
               ></textarea>
               <div class="composer-footer">
@@ -604,10 +595,10 @@ const nav = [
                 ><button
                   @click="
                     task =
-                      'Подготовь знакомящий пост о нашей компании и её преимуществах'
+                      isSalavat ? 'Подготовь пост для коллег о том, что за качеством стекла стоит слаженная команда. Используй только подтверждённые ценности из брендбука, без выдуманных событий и персоналий.' : 'Подготовь знакомящий пост о нашей компании и её преимуществах'
                   "
                 >
-                  Пост о компании</button
+                  История команды</button
                 ><button
                   @click="
                     task =
@@ -953,9 +944,7 @@ const nav = [
         >
         <footer>
           <span
-            >awesome<span class="purple-text">.</span>
-            <span class="footer-divider">/</span> Ваш маркетинг.
-            Сверхвозможности AI.</span
+            >Контент-студия <span class="footer-divider">/</span> От идеи до публикации.</span
           ><span><ShieldCheck :size="13" /> Публикуем только с одобрением</span>
         </footer>
       </div>
@@ -1018,14 +1007,12 @@ const nav = [
               {{ company?.channel || "КАНАЛ НЕ ПОДКЛЮЧЁН" }}
             </div>
             <h2>{{ selected.title || "Материал готовится" }}</h2>
-            <p class="post-full" v-if="!editing">
-              {{ selected.body || selected.request }}
-            </p>
+            <PostText v-if="!editing" :post="selected" />
             <textarea
               v-else
               v-model="editBody"
               rows="12"
-              maxlength="1000"
+              maxlength="3800"
             ></textarea>
             <div v-if="selected.error" class="error-banner">
               {{ selected.error }}
@@ -1101,7 +1088,7 @@ const nav = [
               <RotateCcw :size="16" /> Повторить генерацию</button
             ><small class="detail-note"
               >{{ fmt(selected.created_at) }} · {{ selected.provider
-              }}<br />Изображение: AI-макет, программная PNG-карточка</small
+              }}<br />Изображение: {{ selected.image_source || 'AI-макет · PNG-карточка' }}</small
             >
           </div>
         </div>
@@ -1130,6 +1117,11 @@ const nav = [
           </button>
         </div>
         <p>Отдельные знания, история и согласования.</p>
+        <button type="button" class="brand-template" @click="useSalavatTemplate">
+          <Sparkles :size="25" />
+          <span><b>Редакционный профиль</b><small>Голос, оформление и примеры постов</small></span>
+          <ArrowRight :size="18" />
+        </button>
         <label
           >Название<input
             v-model="form.name"
