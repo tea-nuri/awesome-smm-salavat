@@ -17,6 +17,7 @@ const maxImageBytes = 12 << 20
 const maxTaskImages = 6
 
 type TaskMedia struct {
+	Platform    string   `json:"platform,omitempty"`
 	LogoAssetID string   `json:"logo_asset_id,omitempty"`
 	StyleAssets []string `json:"style_assets,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
@@ -58,6 +59,9 @@ func artworkSize(ratio string) (int, int) {
 }
 
 func (p *Post) applyMedia(media TaskMedia) {
+	if media.Platform != "" {
+		p.Platform = media.Platform
+	}
 	if media.LogoAssetID != "" {
 		p.LogoAssetID = media.LogoAssetID
 	}
@@ -78,6 +82,9 @@ func (p *Post) applyMedia(media TaskMedia) {
 }
 
 func (a *App) validateTaskMedia(companyID string, media TaskMedia) error {
+	if media.Platform != "" && media.Platform != "telegram" && media.Platform != "vk" && media.Platform != "max" {
+		return errors.New("Выберите Telegram, VK или MAX")
+	}
 	if media.TextOnly && media.ImageOnly {
 		return errors.New("Выберите доработку текста, изображения или всего материала")
 	}

@@ -1,0 +1,92 @@
+{
+  "generated_at": "2026-11-14T18:04:30.993411+00:00",
+  "source_fingerprint": "a5d3e78d3e7eda1e6ae19e87557886de821af3474088e97583f4beb8f7d38d5b",
+  "checks": [
+    {
+      "name": "Go core: race detector and unit/integration checks",
+      "status": "passed",
+      "exit_code": 0,
+      "output": "ok  \tawesome-smm\t3.650s\n"
+    },
+    {
+      "name": "Telegram, document extraction and image export",
+      "status": "passed",
+      "exit_code": 0,
+      "output": "2026-11-14 21:04:28,805 WARNING Callback acknowledgement: TransportError\n..2026-11-14 21:04:28,826 WARNING Telegram rejected custom emoji for this destination; using standard emoji\n............2026-11-14 21:04:28,849 WARNING Acknowledgement delivery delayed: TransportError\n........\n----------------------------------------------------------------------\nRan 22 tests in 1.070s\n\nOK\n"
+    },
+    {
+      "name": "Vue production build",
+      "status": "passed",
+      "exit_code": 0,
+      "output": "\n> awesome-smm-admin@0.1.0 build\n> vite build\n\nvite v6.4.6 building for production...\ntransforming...\n✓ 1566 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/index.html                   0.59 kB │ gzip:  0.40 kB\ndist/assets/index-ZRtVP8HT.css   41.37 kB │ gzip:  9.53 kB\ndist/assets/index-BB4mb6q9.js   255.24 kB │ gzip: 79.90 kB\n✓ built in 708ms\n"
+    }
+  ],
+  "scope": {
+    "server_deployment": "excluded_by_user",
+    "vk_max_api_tests": "not_performed_by_user_request",
+    "monetary_budget": "deferred_by_user; subscription usage is measured"
+  },
+  "acceptance": [
+    {
+      "criterion": 1,
+      "name": "Telegram task and answer",
+      "evidence": "existing Telegram transport; unit checks; previous live use"
+    },
+    {
+      "criterion": 2,
+      "name": "Context and clarification",
+      "evidence": "tasks_test.go and conversation_test.go"
+    },
+    {
+      "criterion": 3,
+      "name": "Company knowledge",
+      "evidence": "sources_test.go; company-scoped sources"
+    },
+    {
+      "criterion": 4,
+      "name": "Text and image",
+      "evidence": "previous live generated materials; render and image-input checks"
+    },
+    {
+      "criterion": 5,
+      "name": "Approval and revision",
+      "evidence": "main_test.go, operations_test.go"
+    },
+    {
+      "criterion": 6,
+      "name": "No publication without permission",
+      "evidence": "rejection, revision, two-person approval and revoked-access checks"
+    },
+    {
+      "criterion": 7,
+      "name": "Real Telegram publication",
+      "evidence": "previous live publications; no new automatic publication during this acceptance run"
+    },
+    {
+      "criterion": 8,
+      "name": "Autonomous schedule",
+      "evidence": "schedule_test.go and marketing automation checks; previous scheduled Telegram publications"
+    },
+    {
+      "criterion": 9,
+      "name": "Company isolation",
+      "evidence": "sources, media, task, artifact, metric and approval checks"
+    },
+    {
+      "criterion": 10,
+      "name": "Persistence and restart",
+      "evidence": "state, source, schedule and uncertain-delivery checks"
+    },
+    {
+      "criterion": 11,
+      "name": "No-code company setup",
+      "evidence": "existing company UI; onboarding steps in README"
+    },
+    {
+      "criterion": 12,
+      "name": "ChatGPT usage mechanism",
+      "evidence": "Codex subscription rate-limit endpoint and measured generation usage; manual OpenAI device sign-in for a new account"
+    }
+  ],
+  "manual_verification": "This report does not certify a new end-to-end live publication or real VK/MAX operation. Follow the README demonstration with explicit human approval."
+}

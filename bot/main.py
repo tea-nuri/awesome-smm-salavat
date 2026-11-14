@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request, urllib.error
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+import social as social_platforms
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 INTERNAL = os.environ["INTERNAL_TOKEN"]
@@ -390,6 +391,20 @@ def media_loop():
 
 
 def handle(update):
+    if update.get("message_reaction_count"):
+        reaction = update["message_reaction_count"]
+        api("social/reaction", {"chat_id": reaction["chat"]["id"], "username": reaction["chat"].get("username", ""), "message_id": reaction["message_id"], "count": sum(item.get("total_count", 0) for item in reaction.get("reactions", []))})
+        return
+    incoming = update.get("message", {})
+    if incoming.get("chat", {}).get("type") in {"group", "supergroup"}:
+        root = incoming if incoming.get("is_automatic_forward") else incoming.get("reply_to_message", {})
+        origin = root.get("forward_origin", {})
+        if origin.get("type") == "channel":
+            api("social/thread", {"chat_id": incoming["chat"]["id"], "message_id": root["message_id"], "channel_id": origin["chat"]["id"], "channel_username": origin["chat"].get("username", ""), "channel_message_id": origin["message_id"]})
+        if not incoming.get("is_automatic_forward") and not incoming.get("from", {}).get("is_bot"):
+            author = incoming.get("from", {})
+            api("social/incoming", {"chat_id": incoming["chat"]["id"], "message_id": incoming["message_id"], "author": " ".join(filter(None, [author.get("first_name"), author.get("last_name")])), "text": incoming.get("text") or incoming.get("caption") or "", "reply_to_message_id": incoming.get("reply_to_message", {}).get("message_id", 0), "thread_id": incoming.get("message_thread_id", 0)})
+        return
     if "callback_query" in update:
         q = update["callback_query"]
         uid = q["from"]["id"]
@@ -440,7 +455,7 @@ def handle(update):
         )
         answer_callback(
             q["id"],
-            ("Одобрено, публикация " + publication_time(result.get("scheduled_at")) if result and result.get("scheduled_at") else "Одобрено, отправляю в канал")
+            ("Одобрение сохранено, ждём остальных ответственных" if result and result.get("status") == "review" else "Одобрено, публикация " + publication_time(result.get("scheduled_at")) if result and result.get("scheduled_at") else "Одобрено, отправляю в канал")
             if action == "approve"
             else "Материал отклонён",
         )
@@ -591,7 +606,7 @@ def updates_loop():
                 {
                     "offset": STATE["offset"],
                     "timeout": 25,
-                    "allowed_updates": ["message", "callback_query"],
+                    "allowed_updates": ["message", "callback_query", "message_reaction_count"],
                 },
             )
             for u in updates:
@@ -605,7 +620,7 @@ def updates_loop():
                         "message", {}
                     )
                     cid = m.get("chat", {}).get("id")
-                    if cid:
+                    if cid and m.get("chat", {}).get("type", "private") == "private":
                         try:
                             send(cid, "Не удалось выполнить действие: " + str(e)[:250])
                         except Exception:
@@ -630,12 +645,9 @@ def outbox_loop():
                 kind = event["kind"]
                 chat = event["chat_id"]
                 post = data.get("post", {})
-                company = data.get("company", {})
+                company = data.get("company") or {}
                 if kind == "message":
-                    if company.get("emoji_source") == "pack":
-                        rich_send(chat, event["text"], {}, company)
-                    else:
-                        send(chat, event["text"])
+                    rich_send(chat, event["text"], {}, company)
                 elif kind == "preview":
                     if post.get("status") != "review":
                         api("outbox/" + event["id"], {"ok": True})
@@ -673,6 +685,13 @@ def outbox_loop():
                     if not api("publication-check", {"post_id": post["id"]}).get("ok"):
                         api("outbox/" + event["id"], {"ok": True})
                         continue
+                    if post.get("platform") in {"vk", "max"}:
+                        with urllib.request.urlopen(urllib.request.Request(BACKEND + "/internal/media/" + post["image"], headers={"Authorization": "Bearer " + INTERNAL}), timeout=20) as response:
+                            image = response.read()
+                        outcome.update(social_platforms.publish(data.get("connection"), post, image))
+                        outcome["ok"] = True
+                        api("outbox/" + event["id"], outcome)
+                        continue
                     msg = deliver_post(company["channel"], post, company)
                     chat_info = msg["chat"]
                     username = chat_info.get("username")
@@ -685,6 +704,17 @@ def outbox_loop():
                         + str(msg["message_id"])
                     )
                     outcome.update(message_id=msg["message_id"], url=link)
+                elif kind == "reply":
+                    checked = api("reply-check", {"id": event["reply_id"]})
+                    if not checked.get("ok"):
+                        api("outbox/" + event["id"], {"ok": True})
+                        continue
+                    entry = checked["entry"]
+                    if entry.get("platform") in {"vk", "max"}:
+                        outcome.update(social_platforms.send_reply(checked.get("connection"), entry))
+                    else:
+                        msg = tg("sendMessage", {"chat_id": entry["chat_id"], "text": entry["draft"], "reply_parameters": {"message_id": entry["message_id"], "allow_sending_without_reply": False}})
+                        outcome.update(message_id=msg["message_id"])
                 outcome["ok"] = True
             except Exception as e:
                 outcome["error"] = str(e)[:250]
@@ -699,6 +729,40 @@ def outbox_loop():
         except Exception as e:
             logging.warning("Outbox: %s", str(e)[:150])
             STOP.wait(3)
+
+
+def health_loop():
+    admins, failures, alerted = [], 0, False
+    while not STOP.is_set():
+        try:
+            request(BACKEND + "/healthz", timeout=5)
+            config = api("config")
+            admins = [int(uid) for uid, allowed in config.get("admins", {}).items() if allowed]
+            if alerted:
+                for uid in admins:
+                    acknowledge(uid, "Сервис AI-маркетолога снова доступен.")
+            failures, alerted = 0, False
+        except Exception:
+            failures += 1
+            if failures >= 3 and not alerted:
+                for uid in admins:
+                    acknowledge(uid, "Сервис AI-маркетолога не отвечает на проверку доступности. Проверьте локальный процесс backend.")
+                alerted = True
+        STOP.wait(15)
+
+
+def social_loop():
+    while not STOP.is_set():
+        try:
+            for connection in api("social/config"):
+                try:
+                    result = social_platforms.collect(connection)
+                except Exception:
+                    result = {"company_id": connection["company_id"], "platform": connection["platform"], "error": "Не удалось обновить площадку. Проверьте токен, права и соединение"}
+                api("social/observations", result)
+        except Exception:
+            logging.warning("Social monitoring temporarily unavailable")
+        STOP.wait(120)
 
 
 def main():
@@ -739,6 +803,8 @@ def main():
         signal.signal(sig, lambda *_: STOP.set())
     threading.Thread(target=outbox_loop, daemon=True).start()
     threading.Thread(target=media_loop, daemon=True).start()
+    threading.Thread(target=social_loop, daemon=True).start()
+    threading.Thread(target=health_loop, daemon=True).start()
     updates_loop()
 
 

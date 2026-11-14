@@ -45,6 +45,9 @@ func (s Schedule) nextPublication(after time.Time) (time.Time, error) {
 }
 
 func configureSchedule(s *Schedule, current time.Time) error {
+	if s.Platform != "" && s.Platform != "telegram" && s.Platform != "vk" && s.Platform != "max" {
+		return errors.New("Выберите Telegram, VK или MAX")
+	}
 	if len(s.Request) > 12000 {
 		return errors.New("Укажите задачу до 12000 символов")
 	}
@@ -76,6 +79,7 @@ func (a *App) retimeSchedulePosts(s *Schedule, current time.Time) {
 		if p.ScheduleID != s.ID || p.Status == "published" || p.Status == "publishing" || p.Status == "uncertain" || p.Status == "rejected" || p.Status == "cancelled" {
 			continue
 		}
+		p.Platform = s.Platform
 		if s.calendar() {
 			next, err := a.nextFreePublication(s, current, p.ID)
 			if err != nil {
@@ -153,6 +157,7 @@ func (a *App) dispatchSchedules(current time.Time) bool {
 			slot := *s.NextPublicationAt
 			if !a.slotTaken(s.ID, slot, "") {
 				p := a.newPost(s.CompanyID, s.Request, s.UserID, s.ChatID, &slot)
+				p.Platform = s.Platform
 				p.ScheduleID = s.ID
 				a.event(s.CompanyID, "Подготовка поста к публикации по расписанию", "schedule")
 			}
@@ -179,6 +184,7 @@ func (a *App) dispatchSchedules(current time.Time) bool {
 			continue
 		}
 		p := a.newPost(s.CompanyID, s.Request, s.UserID, s.ChatID, nil)
+		p.Platform = s.Platform
 		p.ScheduleID = s.ID
 		a.event(s.CompanyID, "Автономный запуск задачи по расписанию", "schedule")
 		if interval > 0 {
@@ -190,6 +196,14 @@ func (a *App) dispatchSchedules(current time.Time) bool {
 	}
 	for _, p := range a.state.Posts {
 		if p.isConversation() || p.Status != "approved" || p.ApprovedRevision != p.Revision || (p.ScheduledAt != nil && p.ScheduledAt.After(current)) {
+			continue
+		}
+		if !a.policyApproved(p) {
+			p.Status = "review"
+			p.ApprovedRevision = 0
+			p.UpdatedAt = current
+			a.queuePreview(p)
+			changed = true
 			continue
 		}
 		if s := a.state.Schedules[p.ScheduleID]; s != nil && s.calendar() {
@@ -215,7 +229,7 @@ func (a *App) dispatchSchedules(current time.Time) bool {
 			continue
 		}
 		c := a.state.Companies[p.CompanyID]
-		if c == nil || c.Channel == "" {
+		if c == nil || a.publicationTarget(p, c) == "" {
 			continue
 		}
 		p.Status = "publishing"

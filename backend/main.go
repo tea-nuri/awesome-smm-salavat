@@ -40,33 +40,40 @@ type Company struct {
 }
 type Post struct {
 	TaskMedia
-	ID               string     `json:"id"`
-	CompanyID        string     `json:"company_id"`
-	Request          string     `json:"request"`
-	Title            string     `json:"title"`
-	Body             string     `json:"body"`
-	Image            string     `json:"image"`
-	Status           string     `json:"status"`
-	Kind             string     `json:"kind,omitempty"`
-	Revision         int        `json:"revision"`
-	ApprovedRevision int        `json:"approved_revision"`
-	ScheduledAt      *time.Time `json:"scheduled_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	Error            string     `json:"error,omitempty"`
-	URL              string     `json:"url,omitempty"`
-	Provider         string     `json:"provider"`
-	UserID           int64      `json:"user_id"`
-	ChatID           int64      `json:"chat_id"`
-	Attempts         int        `json:"attempts"`
-	ScheduleID       string     `json:"schedule_id,omitempty"`
-	Emphasis         []string   `json:"emphasis,omitempty"`
-	Quote            string     `json:"quote,omitempty"`
-	ImageSource      string     `json:"image_source,omitempty"`
-	Visual           AIVisual   `json:"visual,omitempty"`
-	Dialog           []TaskTurn `json:"dialog,omitempty"`
-	Stage            string     `json:"stage,omitempty"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
+	ID                      string          `json:"id"`
+	CompanyID               string          `json:"company_id"`
+	Request                 string          `json:"request"`
+	Title                   string          `json:"title"`
+	Body                    string          `json:"body"`
+	Image                   string          `json:"image"`
+	Status                  string          `json:"status"`
+	Kind                    string          `json:"kind,omitempty"`
+	Revision                int             `json:"revision"`
+	ApprovedRevision        int             `json:"approved_revision"`
+	ScheduledAt             *time.Time      `json:"scheduled_at,omitempty"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+	Error                   string          `json:"error,omitempty"`
+	URL                     string          `json:"url,omitempty"`
+	Provider                string          `json:"provider"`
+	UserID                  int64           `json:"user_id"`
+	ChatID                  int64           `json:"chat_id"`
+	Attempts                int             `json:"attempts"`
+	ScheduleID              string          `json:"schedule_id,omitempty"`
+	Emphasis                []string        `json:"emphasis,omitempty"`
+	Quote                   string          `json:"quote,omitempty"`
+	ImageSource             string          `json:"image_source,omitempty"`
+	Visual                  AIVisual        `json:"visual,omitempty"`
+	Dialog                  []TaskTurn      `json:"dialog,omitempty"`
+	Stage                   string          `json:"stage,omitempty"`
+	StartedAt               *time.Time      `json:"started_at,omitempty"`
+	Skill                   string          `json:"skill,omitempty"`
+	TargetID                string          `json:"target_id,omitempty"`
+	Approvals               []Approval      `json:"approvals,omitempty"`
+	Checks                  []MaterialCheck `json:"checks,omitempty"`
+	ChecksConfirmedRevision int             `json:"checks_confirmed_revision,omitempty"`
+	MessageID               int64           `json:"message_id,omitempty"`
+	ExternalMessageID       string          `json:"external_message_id,omitempty"`
 }
 type Message struct {
 	Role string    `json:"role"`
@@ -89,8 +96,10 @@ type Outbox struct {
 	CompanyID string    `json:"company_id"`
 	Claimed   bool      `json:"claimed"`
 	CreatedAt time.Time `json:"created_at"`
+	ReplyID   string    `json:"reply_id,omitempty"`
 }
 type Schedule struct {
+	Platform          string     `json:"platform,omitempty"`
 	ID                string     `json:"id"`
 	CompanyID         string     `json:"company_id"`
 	Request           string     `json:"request"`
@@ -107,18 +116,27 @@ type Schedule struct {
 	NextPublicationAt *time.Time `json:"next_publication_at,omitempty"`
 }
 type State struct {
-	Sources   map[string]*KnowledgeSource `json:"sources,omitempty"`
-	Companies map[string]*Company         `json:"companies"`
-	Posts     map[string]*Post            `json:"posts"`
-	History   map[string][]Message        `json:"history"`
-	Events    []Event                     `json:"events"`
-	Outbox    []*Outbox                   `json:"outbox"`
-	Schedules map[string]*Schedule        `json:"schedules"`
-	Active    map[string]string           `json:"active"`
-	Updates   map[string]bool             `json:"updates"`
-	Assets    map[string]*Asset           `json:"assets,omitempty"`
+	DiscussionPosts map[string]string             `json:"discussion_posts,omitempty"`
+	Operations      map[string]*CompanyOperations `json:"operations,omitempty"`
+	Usage           []*UsageRecord                `json:"usage,omitempty"`
+	Artifacts       map[string]*MarketingArtifact `json:"artifacts,omitempty"`
+	Inbox           map[string]*InboxEntry        `json:"inbox,omitempty"`
+	Metrics         map[string]*MetricRecord      `json:"metrics,omitempty"`
+	Control         ControlSettings               `json:"control"`
+	Sources         map[string]*KnowledgeSource   `json:"sources,omitempty"`
+	Companies       map[string]*Company           `json:"companies"`
+	Posts           map[string]*Post              `json:"posts"`
+	History         map[string][]Message          `json:"history"`
+	Events          []Event                       `json:"events"`
+	Outbox          []*Outbox                     `json:"outbox"`
+	Schedules       map[string]*Schedule          `json:"schedules"`
+	Active          map[string]string             `json:"active"`
+	Updates         map[string]bool               `json:"updates"`
+	Assets          map[string]*Asset             `json:"assets,omitempty"`
 }
 type App struct {
+	authMu                                                                                    sync.Mutex
+	authSession                                                                               *AuthSession
 	mu                                                                                        sync.Mutex
 	state                                                                                     State
 	dir, front, botToken, internal, localToken, publicURL, python, codex, aiDir, renderScript string
@@ -165,6 +183,7 @@ func main() {
 	}
 	go a.worker()
 	go a.publicationClock()
+	go a.operationsWorker()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]any{"ok": true, "service": "awesome-smm"})
@@ -215,6 +234,21 @@ func (a *App) load() error {
 	if a.state.Assets == nil {
 		a.state.Assets = map[string]*Asset{}
 	}
+	a.initOperations()
+	for _, usage := range a.state.Usage {
+		if usage.Status == "running" {
+			usage.Status = "interrupted"
+			usage.Error = "Сервис перезапущен до получения статистики; фактический расход неизвестен"
+			t := now()
+			usage.FinishedAt = &t
+		}
+	}
+	for _, entry := range a.state.Inbox {
+		if entry.Status == "sending" {
+			entry.Status = "uncertain"
+			entry.Error = "Сервис перезапущен во время отправки. Проверьте обсуждение"
+		}
+	}
 	if len(a.state.Companies) == 0 {
 		var owner int64
 		for n := range a.admins {
@@ -226,6 +260,10 @@ func (a *App) load() error {
 		a.event(c.ID, "Компания подключена. Заполните сведения о бизнесе.", "system")
 	}
 	for _, p := range a.state.Posts {
+		if p.MessageID == 0 && p.URL != "" {
+			parts := strings.Split(strings.TrimRight(p.URL, "/"), "/")
+			p.MessageID, _ = strconv.ParseInt(parts[len(parts)-1], 10, 64)
+		}
 		if p.Status == "working" {
 			p.Status = "generating"
 			p.Stage, p.StartedAt = "queued", nil
@@ -237,6 +275,11 @@ func (a *App) load() error {
 	}
 	out := a.state.Outbox[:0]
 	for _, e := range a.state.Outbox {
+		if e.Kind == "reply" {
+			if entry := a.state.Inbox[e.ReplyID]; entry == nil || entry.Status != "sending" {
+				continue
+			}
+		}
 		if e.Kind == "publish" {
 			p := a.state.Posts[e.PostID]
 			if p == nil || p.Status != "publishing" {
@@ -306,7 +349,7 @@ func (a *App) allowed(u identity, c *Company) bool {
 	}
 	return false
 }
-func (a *App) user(n int64) identity { return identity{ID: n, Admin: a.admins[n]} }
+func (a *App) user(n int64) identity { return identity{ID: n, Admin: a.isAdmin(n)} }
 func (a *App) active(u identity) *Company {
 	if c := a.state.Companies[a.state.Active[strconv.FormatInt(u.ID, 10)]]; a.allowed(u, c) {
 		return c
@@ -379,18 +422,23 @@ func validateInit(raw, token string) (identity, error) {
 	return u, nil
 }
 func (a *App) auth(r *http.Request) (identity, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if localRequest(r) && a.localToken != "" && hmac.Equal([]byte(r.Header.Get("X-Local-Token")), []byte(a.localToken)) {
 		for n := range a.admins {
-			return identity{ID: n, Name: "Администратор", Admin: true}, nil
+			if a.isAdmin(n) {
+				return identity{ID: n, Name: "Администратор", Admin: true}, nil
+			}
 		}
 	}
 	raw := r.Header.Get("X-Telegram-Init-Data")
 	u, e := validateInit(raw, a.botToken)
-	u.Admin = a.admins[u.ID]
+	u.Admin = a.isAdmin(u.ID)
 	return u, e
 }
 func (a *App) media(w http.ResponseWriter, r *http.Request) {
-	if _, e := a.auth(r); e != nil {
+	u, e := a.auth(r)
+	if e != nil {
 		fail(w, 401, "Войдите через Telegram")
 		return
 	}
@@ -400,7 +448,6 @@ func (a *App) media(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	u, _ := a.auth(r)
 	allowed := false
 	for _, p := range a.state.Posts {
 		if p.Image == name && a.allowed(u, a.state.Companies[p.CompanyID]) {
@@ -428,6 +475,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	u, e := a.auth(r)
 	if e != nil {
 		fail(w, 401, "Откройте админку кнопкой в Telegram-боте")
+		return
+	}
+	if a.operationsAPI(w, r, u) {
 		return
 	}
 	if r.URL.Path == "/api/assets" || strings.HasPrefix(r.URL.Path, "/api/assets/") {
@@ -478,7 +528,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(ps, func(i, j int) bool { return ps[i].CreatedAt.After(ps[j].CreatedAt) })
 		sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
 		for _, ev := range a.state.Events {
-			if a.allowed(u, a.state.Companies[ev.CompanyID]) {
+			if (u.Admin && ev.CompanyID == "") || a.allowed(u, a.state.Companies[ev.CompanyID]) {
 				es = append(es, ev)
 			}
 		}
@@ -586,7 +636,19 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			c.Brief = in.Brief
 			c.Tone = in.Tone
 			c.Audience = in.Audience
+			channelChanged := c.Channel != in.Channel
 			c.Channel = in.Channel
+			if channelChanged {
+				for _, p := range a.state.Posts {
+					if p.CompanyID == c.ID && (p.Platform == "" || p.Platform == "telegram") && (p.Status == "review" || p.Status == "approved") {
+						p.Status = "review"
+						p.Revision++
+						p.ApprovedRevision = 0
+						p.Approvals = nil
+						a.queuePreview(p)
+					}
+				}
+			}
 			a.event(c.ID, "Обновлены знания и настройки компании", "system")
 			a.persist()
 			reply(w, 200, c)
@@ -626,6 +688,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p := a.newPost(in.CompanyID, in.Request, u.ID, u.ID, in.ScheduledAt)
+		if len(in.Attachments) == 0 {
+			p.Skill = detectSkill(in.Request)
+		}
 		p.TaskMedia = in.TaskMedia
 		p.ImageMode = imageMode(p.ImageMode)
 		p.AspectRatio = aspectRatio(p.AspectRatio)
@@ -734,7 +799,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.ID, in.CompanyID, in.UserID, in.ChatID = old.ID, old.CompanyID, old.UserID, old.ChatID
-		calendarChanged := old.Frequency != in.Frequency || old.PublishTime != in.PublishTime || old.Weekday != in.Weekday || old.TimeZone != in.TimeZone
+		calendarChanged := old.Frequency != in.Frequency || old.PublishTime != in.PublishTime || old.Weekday != in.Weekday || old.TimeZone != in.TimeZone || old.Platform != in.Platform
 		*old = in
 		if calendarChanged {
 			a.retimeSchedulePosts(old, now())
@@ -835,10 +900,16 @@ func (a *App) action(u identity, pid, action string, rev int, comment, title, bo
 			return nil, errors.New("Материал сейчас нельзя согласовать")
 		}
 		c := a.state.Companies[p.CompanyID]
+		if !a.mayApprove(u, p) {
+			return nil, errors.New("Согласование доступно назначенным ответственным")
+		}
+		if a.companyOperations(p.CompanyID).Policy.ConfirmChecks && p.ChecksConfirmedRevision != p.Revision {
+			return nil, errors.New("Сначала подтвердите проверку фактов и визуала в кабинете")
+		}
 		if !allowedPackEmoji(p.Body, *c) {
 			return nil, errors.New("В тексте есть эмодзи вне выбранного пака. Сохраните текст заново перед согласованием")
 		}
-		if c.Channel == "" {
+		if a.publicationTarget(p, c) == "" {
 			return nil, errors.New("Сначала подключите канал в настройках компании")
 		}
 		if s := a.state.Schedules[p.ScheduleID]; s != nil && s.calendar() && p.ScheduledAt != nil && now().Sub(*p.ScheduledAt) > publicationGrace {
@@ -849,9 +920,20 @@ func (a *App) action(u identity, pid, action string, rev int, comment, title, bo
 			p.ScheduledAt = &next
 			p.Revision++
 		}
-		p.ApprovedRevision = p.Revision
-		p.Status = "approved"
-		a.event(p.CompanyID, "Согласована версия "+strconv.Itoa(p.Revision)+": "+p.Title, "approval")
+		already := false
+		for _, approval := range p.Approvals {
+			if approval.UserID == u.ID && approval.Revision == p.Revision {
+				already = true
+			}
+		}
+		if !already {
+			p.Approvals = append(p.Approvals, Approval{UserID: u.ID, Revision: p.Revision, At: now()})
+		}
+		if a.approvalCount(p) >= max(1, a.companyOperations(p.CompanyID).Policy.Required) {
+			p.ApprovedRevision = p.Revision
+			p.Status = "approved"
+		}
+		a.event(p.CompanyID, "Сохранено одобрение "+strconv.Itoa(a.approvalCount(p))+"/"+strconv.Itoa(max(1, a.companyOperations(p.CompanyID).Policy.Required))+" версии "+strconv.Itoa(p.Revision)+": "+p.Title, "approval")
 	case "reject":
 		if p.Status != "review" && p.Status != "approved" {
 			return nil, errors.New("Материал сейчас нельзя отклонить")
@@ -892,6 +974,7 @@ func (a *App) action(u identity, pid, action string, rev int, comment, title, bo
 		p.Status = "review"
 		a.queuePreview(p)
 		a.event(p.CompanyID, "Текст изменён. Требуется новое согласование", "approval")
+		p.Checks = a.materialChecks(p)
 	case "retry":
 		if p.Status != "failed" {
 			return nil, errors.New("Повтор доступен только после ошибки генерации")
@@ -906,18 +989,25 @@ func (a *App) action(u identity, pid, action string, rev int, comment, title, bo
 		p.Stage, p.StartedAt = "queued", nil
 	}
 	p.UpdatedAt = now()
+	a.event(p.CompanyID, "Действие "+action+" · пользователь "+strconv.FormatInt(u.ID, 10), "audit")
 	return p, nil
 }
 func (a *App) queuePreview(p *Post) {
 	if p.Status != "review" || p.isConversation() {
 		return
 	}
-	a.state.Outbox = append(a.state.Outbox, &Outbox{ID: id(), Kind: "preview", PostID: p.ID, CompanyID: p.CompanyID, ChatID: p.ChatID, CreatedAt: now()})
+	recipients := a.companyOperations(p.CompanyID).Policy.Approvers
+	if len(recipients) == 0 {
+		recipients = []int64{p.ChatID}
+	}
+	for _, chat := range recipients {
+		a.state.Outbox = append(a.state.Outbox, &Outbox{ID: id(), Kind: "preview", PostID: p.ID, CompanyID: p.CompanyID, ChatID: chat, CreatedAt: now()})
+	}
 }
 
 func (p *Post) isConversation() bool {
 	// Status covers records created before explicit result kinds were persisted.
-	return p.Status == "answered" || p.Kind == "answer" || p.Kind == "clarification"
+	return p.Skill != "" || p.Status == "answered" || p.Kind == "answer" || p.Kind == "clarification"
 }
 func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 	if !hmac.Equal([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), []byte(a.internal)) {
@@ -926,12 +1016,21 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/internal/assets" {
 		userID, _ := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
-		a.assetAPI(w, r, a.user(userID), r.URL.Query().Get("company_id"))
+		a.mu.Lock()
+		user := a.user(userID)
+		a.mu.Unlock()
+		a.assetAPI(w, r, user, r.URL.Query().Get("company_id"))
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	path := strings.TrimPrefix(r.URL.Path, "/internal/")
+	if a.internalConnectionsAPI(w, r, path) {
+		return
+	}
+	if a.internalSocialAPI(w, r, path) {
+		return
+	}
 	if path == "reference" && r.Method == "POST" {
 		var in struct {
 			UserID   int64 `json:"user_id"`
@@ -965,7 +1064,18 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "config" {
-		reply(w, 200, map[string]any{"public_url": a.publicURL, "admins": a.admins})
+		admins := map[int64]bool{}
+		for uid := range a.admins {
+			if a.isAdmin(uid) {
+				admins[uid] = true
+			}
+		}
+		for _, uid := range a.state.Control.Admins {
+			if a.isAdmin(uid) {
+				admins[uid] = true
+			}
+		}
+		reply(w, 200, map[string]any{"public_url": a.publicURL, "admins": admins})
 		return
 	}
 	if path == "revision-check" && r.Method == "POST" {
@@ -1107,6 +1217,9 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 					p.applyMedia(in.TaskMedia)
 				} else {
 					p = a.newPost(c.ID, text, in.UserID, in.ChatID, nil)
+					if len(in.Attachments) == 0 {
+						p.Skill = detectSkill(text)
+					}
 					p.TaskMedia = in.TaskMedia
 				}
 				p.ImageMode = imageMode(p.ImageMode)
@@ -1168,6 +1281,20 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "outbox" && r.Method == "GET" {
+		kept := a.state.Outbox[:0]
+		for _, event := range a.state.Outbox {
+			if (event.Kind == "message" || event.Kind == "preview") && event.ChatID > 0 {
+				user := a.user(event.ChatID)
+				if !a.allowed(user, a.state.Companies[event.CompanyID]) && !(event.CompanyID == "" && user.Admin) {
+					continue
+				}
+			}
+			kept = append(kept, event)
+		}
+		if len(kept) != len(a.state.Outbox) {
+			a.state.Outbox = kept
+			a.persist()
+		}
 		for _, e := range a.state.Outbox {
 			if !e.Claimed {
 				e.Claimed = true
@@ -1178,7 +1305,13 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 					if p != nil {
 						out["post"] = p
 						out["company"] = a.state.Companies[p.CompanyID]
+						if p.Platform == "vk" || p.Platform == "max" {
+							out["connection"] = a.privateConnection(p.CompanyID, p.Platform)
+						}
 					}
+				}
+				if e.ReplyID != "" {
+					out["entry"] = a.state.Inbox[e.ReplyID]
 				}
 				reply(w, 200, out)
 				return
@@ -1199,10 +1332,11 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(path, "outbox/") && r.Method == "POST" {
 		eid := strings.TrimPrefix(path, "outbox/")
 		var in struct {
-			OK        bool   `json:"ok"`
-			MessageID int64  `json:"message_id"`
-			URL       string `json:"url"`
-			Error     string `json:"error"`
+			OK                bool   `json:"ok"`
+			MessageID         int64  `json:"message_id"`
+			ExternalMessageID string `json:"external_message_id"`
+			URL               string `json:"url"`
+			Error             string `json:"error"`
 		}
 		if decode(r, &in) != nil {
 			fail(w, 400, "Bad request")
@@ -1218,6 +1352,8 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 					if in.OK {
 						p.Status = "published"
 						p.URL = in.URL
+						p.MessageID = in.MessageID
+						p.ExternalMessageID = in.ExternalMessageID
 						p.Error = ""
 						a.event(p.CompanyID, "Опубликовано в Telegram: "+p.Title, "published")
 						a.history(p.CompanyID, "system", "Опубликован материал «"+p.Title+"»: "+p.Body+". Ссылка: "+p.URL)
@@ -1229,6 +1365,18 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 						a.notify(p.CompanyID, p.ChatID, p.Error)
 					}
 					p.UpdatedAt = now()
+				}
+			} else if ev.Kind == "reply" {
+				if entry := a.state.Inbox[ev.ReplyID]; entry != nil {
+					entry.UpdatedAt = now()
+					if in.OK {
+						entry.Status = "sent"
+						entry.ReplyMessageID = in.MessageID
+					} else {
+						entry.Status = "uncertain"
+						entry.Error = "Не удалось подтвердить отправку. Проверьте обсуждение перед повтором"
+						a.adminNotify(entry.CompanyID, entry.Error, 0)
+					}
 				}
 			} else if !in.OK {
 				a.event(ev.CompanyID, "Не удалось доставить уведомление: "+in.Error, "error")
@@ -1246,7 +1394,15 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		decode(r, &in)
 		p := a.state.Posts[in.PostID]
-		ok := p != nil && !p.isConversation() && p.Status == "publishing" && p.Revision == p.ApprovedRevision
+		ok := p != nil && !p.isConversation() && p.Status == "publishing" && p.Revision == p.ApprovedRevision && a.policyApproved(p)
+		if ok && p.ScheduleID != "" && p.ScheduledAt != nil {
+			schedule := a.state.Schedules[p.ScheduleID]
+			if schedule == nil || !schedule.Enabled {
+				ok = false
+				p.Status = "approved"
+				a.persist()
+			}
+		}
 		reply(w, 200, map[string]bool{"ok": ok})
 		return
 	}
@@ -1254,12 +1410,13 @@ func (a *App) internalAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type AIResult struct {
-	Kind     string   `json:"kind"`
-	Title    string   `json:"title"`
-	Body     string   `json:"body"`
-	Emphasis []string `json:"emphasis"`
-	Quote    string   `json:"quote"`
-	Visual   AIVisual `json:"visual"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Kind     string          `json:"kind"`
+	Title    string          `json:"title"`
+	Body     string          `json:"body"`
+	Emphasis []string        `json:"emphasis"`
+	Quote    string          `json:"quote"`
+	Visual   AIVisual        `json:"visual"`
 }
 type AIVisual struct {
 	Headline    string   `json:"headline"`
@@ -1293,6 +1450,13 @@ func (a *App) tick() {
 	var company Company
 	var hist []Message
 	if target != nil {
+		if !a.allowed(a.user(target.UserID), a.state.Companies[target.CompanyID]) {
+			target.Status = "cancelled"
+			target.Error = "Доступ автора задачи отозван"
+			a.persist()
+			a.mu.Unlock()
+			return
+		}
 		target.Status = "working"
 		target.Stage, target.StartedAt = "text", &t
 		target.Attempts++
@@ -1316,6 +1480,12 @@ func (a *App) tick() {
 	if p == nil || p.Revision != copyPost.Revision || p.Status != "working" {
 		return
 	}
+	if !a.allowed(a.user(p.UserID), a.state.Companies[p.CompanyID]) {
+		p.Status = "cancelled"
+		p.Error = "Доступ автора задачи отозван"
+		a.persist()
+		return
+	}
 	p.UpdatedAt = now()
 	if e != nil {
 		p.Status = "failed"
@@ -1323,6 +1493,7 @@ func (a *App) tick() {
 		p.Error = e.Error()
 		a.event(p.CompanyID, "Ошибка генерации: "+p.Error, "error")
 		a.notify(p.CompanyID, p.ChatID, "Не удалось подготовить материал: "+p.Error+"\nМожно повторить задачу в кабинете.")
+		a.adminNotify(p.CompanyID, "Ошибка AI-задачи "+p.ID+": "+p.Error, p.ChatID)
 		a.persist()
 		return
 	}
@@ -1359,6 +1530,7 @@ func (a *App) applyGenerationResult(p *Post, result AIResult, img string) {
 		p.Image, p.Visual, p.ImageSource = previousImage, previousVisual, previousImageSource
 		p.ApprovedRevision = 0
 		a.history(p.CompanyID, "assistant", result.Body)
+		a.saveMarketingArtifact(p, result)
 		a.notify(p.CompanyID, p.ChatID, result.Body)
 		message := "Подготовлен ответ с учётом истории"
 		if result.Kind == "clarification" {
@@ -1371,6 +1543,7 @@ func (a *App) applyGenerationResult(p *Post, result AIResult, img string) {
 			p.ImageSource = previousImageSource
 		}
 		p.Status = "review"
+		p.Checks = a.materialChecks(p)
 		p.Stage = "ready"
 		a.history(p.CompanyID, "assistant", "Черновик «"+p.Title+"»: "+p.Body)
 		a.queuePreview(p)
@@ -1396,29 +1569,15 @@ func (a *App) generate(p Post, c Company, h []Message) (AIResult, string, error)
 	if c.BrandProfile == "salavatsteklo" {
 		prompt = salavatPrompt(p, c, h)
 	}
+	if p.Skill != "" {
+		prompt = a.marketingPrompt(p, c, h)
+	} else {
+		prompt += a.strategyContext(c.ID) + platformBrief(p.Platform)
+	}
 	textCtx, textCancel := context.WithTimeout(ctx, 150*time.Second)
 	defer textCancel()
-	cmd := exec.CommandContext(textCtx, a.codex, "exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "features.shell_tool=false", "-C", jobDir, "-o", outFile, "-")
-	if photos := a.taskImagePaths(p); len(photos) > 0 {
-		cmd.Args = cmd.Args[:len(cmd.Args)-1]
-		for _, photo := range photos {
-			cmd.Args = append(cmd.Args, "-i", photo)
-		}
-		cmd.Args = append(cmd.Args, "-")
-	}
-	// Only authentication's default CODEX_HOME and runtime paths are inherited; bot secrets never reach the model process.
-	for _, k := range []string{"PATH", "HOME", "CODEX_HOME", "TMPDIR", "LANG", "USER", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
-		if v := os.Getenv(k); v != "" {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
-	cmd.Stdin = strings.NewReader(prompt)
-	var diagnostics strings.Builder
-	cmd.Stdout = &diagnostics
-	cmd.Stderr = &diagnostics
-	if e := cmd.Run(); e != nil {
-		log.Printf("AI job %s failed (exit only): %v", p.ID, e)
-		return result, "", errors.New("ChatGPT не ответил за отведённое время или сессия недоступна")
+	if err := a.executeText(textCtx, p, prompt, jobDir, outFile); err != nil {
+		return result, "", err
 	}
 	data, e := os.ReadFile(outFile)
 	if e != nil {
@@ -1445,6 +1604,9 @@ func (a *App) generate(p Post, c Company, h []Message) (AIResult, string, error)
 		}
 	}
 	enforceResultEmoji(&result, c)
+	if p.Skill != "" && result.Kind != "answer" && result.Kind != "clarification" {
+		return result, "", errors.New("AI должен вернуть внутренний материал выбранного навыка. Повторите задачу")
+	}
 	if strings.TrimSpace(result.Body) == "" {
 		return result, "", errors.New("AI не подготовил текст после проверки оформления. Повторите задачу")
 	}

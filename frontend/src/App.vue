@@ -1,4 +1,6 @@
 <script setup>
+import OperationsPanel from './OperationsPanel.vue';
+import GuidePanel from './GuidePanel.vue';
 import {
   ref,
   computed,
@@ -41,6 +43,10 @@ import {
   Activity,
   Bot,
   Zap,
+  BarChart3,
+  MessageSquare,
+  Wallet,
+  BookOpen,
 } from "lucide-vue-next";
 const tg = window.Telegram?.WebApp;
 tg?.ready();
@@ -65,7 +71,7 @@ const state = ref(null),
   companyModal = ref(false),
   companyMenu = ref(false);
 const form = ref({ name: "", brief: "", tone: "", audience: "", channel: "" });
-const emptySchedule = () => ({ request: "", next_run: "", repeat: "daily", publish_time: "10:00", weekday: 1 });
+const emptySchedule = () => ({ request: "", next_run: "", repeat: "daily", publish_time: "10:00", weekday: 1, platform:'telegram' });
 const schedule = ref(emptySchedule()), editingScheduleID = ref("");
 const calendarSchedule = computed(() => ["daily", "weekly"].includes(schedule.value.repeat));
 const weekdays = [{value:1,label:"Понедельник"},{value:2,label:"Вторник"},{value:3,label:"Среда"},{value:4,label:"Четверг"},{value:5,label:"Пятница"},{value:6,label:"Суббота"},{value:0,label:"Воскресенье"}];
@@ -83,7 +89,7 @@ function nextScheduledPublication(s) {
 function editSchedule(s) {
   editingScheduleID.value = s.id;
   const date = new Date(s.next_run), local = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-  schedule.value = { request:s.request, next_run:local, repeat:s.frequency || String(s.every_seconds || s.every_minutes * 60 || 0), publish_time:s.publish_time || "10:00", weekday:s.weekday ?? 1 };
+  schedule.value = { request:s.request, next_run:local, repeat:s.frequency || String(s.every_seconds || s.every_minutes * 60 || 0), publish_time:s.publish_time || "10:00", weekday:s.weekday ?? 1,platform:s.platform||'telegram' };
 }
 function resetSchedule() { schedule.value=emptySchedule();editingScheduleID.value=""; }
 const taskPhotos = ref([]), revisionPhotos = ref([]), revisionScope = ref("all"), uploadingPhotos = ref(false);
@@ -91,6 +97,7 @@ const activeTaskIDs = ref({}), replyDrafts = ref({}), replySending = ref(false),
 const taskPanel = ref(null), dialogTimeline = ref(null), clockNow = ref(Date.now());
 let clockTimer;
 const taskRatio = ref("1:1"), revisionRatio = ref("1:1");
+const taskPlatform = ref('telegram'), companySection = ref('profile');
 const taskLogo = ref(""), revisionLogo = ref("");
 const taskStyles = ref([]), revisionStyles = ref([]);
 const branding = ref({ logo_asset_id: "", style_assets: [], style_notes: "", emoji_source: "references", emoji_pack: "" });
@@ -380,7 +387,7 @@ async function run(fn) {
 async function createTask() {
   if (!task.value.trim()) return;
   await run(async () => {
-    const created = await api("tasks", { company_id: current.value, request: task.value, attachments: taskPhotos.value.map(p => p.id), image_mode: "style", aspect_ratio: taskRatio.value, logo_asset_id: taskLogo.value, ...(taskStyles.value.length ? { style_assets: taskStyles.value } : {}) });
+    const created = await api("tasks", { company_id: current.value, request: task.value, platform:taskPlatform.value, attachments: taskPhotos.value.map(p => p.id), image_mode: "style", aspect_ratio: taskRatio.value, logo_asset_id: taskLogo.value, ...(taskStyles.value.length ? { style_assets: taskStyles.value } : {}) });
     state.value.tasks = [created, ...(state.value.tasks || []).filter(t => t.id !== created.id)];
     activeTaskIDs.value[current.value] = created.id;
     clearPhotos(taskPhotos);
@@ -410,7 +417,7 @@ async function action(p, kind, comment = "") {
     editing.value = false;
     notify(
       kind === "approve"
-        ? result.scheduled_at ? `Одобрено. Публикация: ${fmtMoscow(result.scheduled_at)}` : "Одобрено. Отправляем в канал."
+        ? result.status==='review' ? 'Ваше одобрение сохранено. Ждём остальных ответственных.' : result.scheduled_at ? `Одобрено. Публикация: ${fmtMoscow(result.scheduled_at)}` : "Одобрено. Отправляем в канал."
         : kind === "reject"
           ? "Публикация отклонена."
           : kind === "revise"
@@ -443,6 +450,7 @@ async function addCompany() {
   await run(async () => {
     const c = await api("companies", form.value);
     companyModal.value = false;
+    companySection.value = "profile";
     await refresh();
     await choose(c);
     tab.value = "settings";
@@ -456,6 +464,7 @@ async function addSchedule() {
     await api(editingScheduleID.value ? "schedules/" + editingScheduleID.value : "schedules", {
       company_id: current.value,
       request: schedule.value.request,
+      platform:schedule.value.platform,
       enabled: existing?.enabled ?? true,
       frequency: calendarSchedule.value ? schedule.value.repeat : "",
       publish_time: schedule.value.publish_time, weekday: Number(schedule.value.weekday), time_zone: "Europe/Moscow",
@@ -584,9 +593,17 @@ onUnmounted(() => {
 const nav = [
   { id: "overview", label: "Обзор", icon: LayoutDashboard },
   { id: "content", label: "Публикации", icon: Layers },
+  { id: "marketing", label: "Маркетинг", icon: Sparkles },
+  { id: "analytics", label: "Аналитика", icon: BarChart3 },
+  { id: "inbox", label: "Обращения", icon: MessageSquare },
   { id: "schedule", label: "Расписание", icon: CalendarClock },
   { id: "settings", label: "Компания", icon: Building2 },
+  { id: "control", label: "Лимиты и доступы", icon: Wallet },
+  { id: "guide", label: "Инструкция", icon: BookOpen },
 ];
+async function composeMarketing(brief){task.value=brief;tab.value='overview';await nextTick();document.querySelector('.task-panel textarea')?.focus()}
+async function operationsFocusTask(id){await refresh();await focusTask(id)}
+async function checkMaterial(p){await run(async()=>{await api(`operations/${p.company_id}/checks/${p.id}`,{revision:p.revision});await refresh();notify('Проверка текущей версии подтверждена')})}
 </script>
 
 <template>
@@ -785,6 +802,7 @@ const nav = [
                 <figure v-for="(photo, index) in taskPhotos" :key="photo.id"><img :src="photo.preview" :alt="photo.name" /><button type="button" :aria-label="'Убрать фото ' + (index + 1)" @click="removeTaskPhoto(index)"><X :size="13" /></button></figure>
               </div>
               <p v-if="taskPhotos.length" class="photo-help">AI впишет фотографии в общую композицию, согласует фон и свет.</p>
+              <label class="platform-picker">Площадка<select v-model="taskPlatform"><option value="telegram">Telegram</option><option value="vk">ВКонтакте</option><option value="max">MAX</option></select></label>
               <fieldset class="image-format">
                 <legend>Формат изображения</legend>
                 <div class="format-options">
@@ -905,7 +923,7 @@ const nav = [
                 </div>
                 <div class="post-copy">
                   <small
-                    >TELEGRAM <span>·</span> {{ fmt(post.created_at) }}</small
+                    >{{ (post.platform || "telegram").toUpperCase() }} <span>·</span> {{ fmt(post.created_at) }}</small
                   >
                   <h3>{{ post.title || "Готовим ваш материал" }}</h3>
                   <p>{{ post.body || post.request }}</p>
@@ -961,7 +979,7 @@ const nav = [
                 }}</span>
               </div>
               <div class="post-copy">
-                <small>TELEGRAM · {{ fmt(post.created_at) }}</small>
+                <small>{{ (post.platform || "telegram").toUpperCase() }} · {{ fmt(post.created_at) }}</small>
                 <h3>{{ post.title || "Готовим ваш материал" }}</h3>
                 <p>{{ post.body || post.request }}</p>
                 <div class="post-card-footer">
@@ -975,8 +993,8 @@ const nav = [
           ><div class="page-heading">
             <div>
               <div class="eyebrow">ОСНОВА ХОРОШЕГО КОНТЕНТА</div>
-              <h1>Знания о компании<span>.</span></h1>
-              <p>Расскажите о бизнесе. AI учтёт это в каждой задаче.</p>
+              <h1>{{companySection==='profile'?'Знания о компании':'Настройки компании'}}<span>.</span></h1>
+              <p>{{companySection==='profile'?'Расскажите о бизнесе. AI учтёт это в каждой задаче.':'Согласования, лимиты и подключения выбранной компании.'}}</p>
             </div>
             <button
               v-if="state.user.admin"
@@ -995,7 +1013,8 @@ const nav = [
               <Plus :size="16" /> Компания
             </button>
           </div>
-          <div class="settings-layout">
+          <div class="company-section-tabs" role="group" aria-label="Раздел настроек компании"><button v-for="section in [{id:'profile',label:'Знания и бренд'},{id:'rules',label:'Правила и лимиты'},{id:'connections',label:'Площадки'}]" :key="section.id" :class="{active:companySection===section.id}" @click="companySection=section.id">{{section.label}}</button></div>
+          <div v-if="companySection==='profile'" class="settings-layout">
             <form class="panel settings-form" @submit.prevent="saveCompany">
               <label
                 >Название компании<input
@@ -1117,7 +1136,7 @@ const nav = [
                   rows="4"
                   placeholder="Подготовь полезный пост для нашей аудитории"
                 ></textarea></label
-              ><label
+              ><label>Площадка расписания<select v-model="schedule.platform"><option value="telegram">Telegram</option><option value="vk">ВКонтакте</option><option value="max">MAX</option></select></label><label
                 >Повторять<select v-model="schedule.repeat">
                   <option value="0">Один раз</option>
                   <option value="30">
@@ -1186,6 +1205,9 @@ const nav = [
             </section>
           </div></template
         >
+        <OperationsPanel v-if="['marketing','analytics','inbox','control'].includes(tab)" :key="current" :mode="tab" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="operationsFocusTask" @compose="composeMarketing" @updated="refresh"/>
+        <OperationsPanel v-if="tab==='settings'&&companySection!=='profile'" :key="current+'-rules'" mode="settings" :section="companySection" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="focusTask" @updated="refresh"/>
+        <GuidePanel v-if="tab==='guide'"/>
         <footer>
           <span
             >Контент-студия <span class="footer-divider">/</span> От идеи до публикации.</span
@@ -1251,6 +1273,8 @@ const nav = [
               {{ company?.channel || "КАНАЛ НЕ ПОДКЛЮЧЁН" }}
             </div>
             <h2>{{ selected.title || "Материал готовится" }}</h2>
+            <div v-if="selected.checks?.length" class="material-checks"><b>Проверка материала</b><p v-for="check in selected.checks" :key="check.code" :class="check.level">{{check.level==='pass'?'✓':'•'}} {{check.text}}</p><button v-if="selected.checks_confirmed_revision!==selected.revision&&selected.status==='review'" class="button secondary" :disabled="busy" @click="checkMaterial(selected)">Факты и визуал проверены</button><small v-else-if="selected.checks_confirmed_revision===selected.revision">Проверка текущей версии подтверждена</small></div>
+            <p v-if="selected.approvals?.length" class="field-note">Одобрений текущей версии: {{new Set(selected.approvals.filter(v=>v.revision===selected.revision).map(v=>v.user_id)).size}}</p>
             <p v-if="selected.scheduled_at" class="field-note"><Clock3 :size="14" /> Публикация: {{ fmtMoscow(selected.scheduled_at) }} · требуется одобрение</p>
             <PostText v-if="!editing" :post="selected" />
             <textarea

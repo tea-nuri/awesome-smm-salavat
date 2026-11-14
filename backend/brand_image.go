@@ -29,6 +29,7 @@ func (a *App) generateBrandImage(parent context.Context, visual AIVisual, jobDir
 	}
 	prompt := brandArtworkPrompt(visual, company, len(styles), logo != "", len(photos), p.AspectRatio)
 	args := []string{"exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write", "-c", "features.shell_tool=false", "-c", "features.image_generation=true", "-C", jobDir, "--json", "-o", output}
+	args = append(args, a.authArguments()...)
 	for _, file := range styles {
 		args = append(args, "-i", file)
 	}
@@ -39,16 +40,18 @@ func (a *App) generateBrandImage(parent context.Context, visual AIVisual, jobDir
 		args = append(args, "-i", photo)
 	}
 	args = append(args, "-")
-	cmd := exec.CommandContext(ctx, a.codex, args...)
-	for _, key := range []string{"PATH", "HOME", "CODEX_HOME", "TMPDIR", "LANG", "USER", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
-		if value := os.Getenv(key); value != "" {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
+	usageID, usageErr := a.beginUsage(p, "image")
+	if usageErr != nil {
+		return "", usageErr
 	}
+	cmd := exec.CommandContext(ctx, a.codex, args...)
+	cmd.Env = a.aiEnvironment()
 	cmd.Stdin = strings.NewReader(prompt)
 	var events strings.Builder
 	cmd.Stdout = &events
-	if cmd.Run() != nil {
+	runErr := cmd.Run()
+	a.finishUsage(usageID, events.String(), runErr)
+	if runErr != nil {
 		return "", errors.New("Не удалось сгенерировать изображение через аккаунт ChatGPT. Повторите задачу")
 	}
 	var thread string
@@ -71,11 +74,7 @@ func (a *App) generateBrandImage(parent context.Context, visual AIVisual, jobDir
 	if json.Unmarshal(data, &result) != nil || result.Path == "" || thread == "" {
 		return "", errors.New("Генерация изображений недоступна в текущем сеансе Codex. Текст не отправлен как готовый пост")
 	}
-	base := os.Getenv("CODEX_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".codex")
-	}
+	base := a.codexHome()
 	path, err := generatedImagePath(filepath.Join(base, "generated_images", thread), result.Path)
 	if err != nil {
 		return "", err
