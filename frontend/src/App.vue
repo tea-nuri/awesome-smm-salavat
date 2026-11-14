@@ -1,6 +1,5 @@
 <script setup>
 import OperationsPanel from './OperationsPanel.vue';
-import GuidePanel from './GuidePanel.vue';
 import {
   ref,
   computed,
@@ -46,7 +45,6 @@ import {
   BarChart3,
   MessageSquare,
   Wallet,
-  BookOpen,
 } from "lucide-vue-next";
 const tg = window.Telegram?.WebApp;
 tg?.ready();
@@ -598,7 +596,6 @@ const nav = [
   { id: "schedule", label: "Расписание", icon: CalendarClock },
   { id: "settings", label: "Компания", icon: Building2 },
   { id: "control", label: "Лимиты и доступы", icon: Wallet },
-  { id: "guide", label: "Инструкция", icon: BookOpen },
 ];
 const primaryNav = nav.filter(n=>["overview","content","schedule","settings"].includes(n.id));
 const extraNav = nav.filter(n=>!["overview","content","schedule","settings"].includes(n.id));
@@ -1209,7 +1206,6 @@ async function checkMaterial(p){await run(async()=>{await api(`operations/${p.co
         >
         <OperationsPanel v-if="['marketing','analytics','control'].includes(tab)" :key="current" :mode="tab" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="operationsFocusTask" @compose="composeMarketing" @updated="refresh"/>
         <OperationsPanel v-if="tab==='settings'&&companySection!=='profile'" :key="current+'-rules'" mode="settings" :section="companySection" :company-id="current" :company="company" :user="state.user" :posts="posts" :api="api" :headers="headers" @task="focusTask" @updated="refresh"/>
-        <GuidePanel v-if="tab==='guide'"/>
         <footer>
           <span
             >Контент-студия <span class="footer-divider">/</span> От идеи до публикации.</span
