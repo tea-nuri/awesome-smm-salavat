@@ -46,7 +46,9 @@ func (a *App) codexHome() string {
 	return dir
 }
 func (a *App) chatGPTConnected() bool {
-	dir := a.codexHome()
+	return chatGPTProfileConnected(a.codexHome())
+}
+func chatGPTProfileConnected(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, ".selected")); err != nil {
 		return false
 	}
@@ -63,13 +65,16 @@ func (a *App) chatGPTConnected() bool {
 	return json.Unmarshal(raw, &auth) == nil && (auth.Mode == "chatgpt" || auth.Mode == "") && auth.Tokens != nil && auth.Tokens.Access != ""
 }
 func (a *App) aiEnvironment() []string {
+	return aiEnvironmentForHome(a.codexHome())
+}
+func aiEnvironmentForHome(dir string) []string {
 	out := []string{}
 	for _, v := range aiEnvironment() {
 		if !strings.HasPrefix(v, "CODEX_HOME=") {
 			out = append(out, v)
 		}
 	}
-	return append(out, "CODEX_HOME="+a.codexHome())
+	return append(out, "CODEX_HOME="+dir)
 }
 func (a *App) authArguments() []string { return []string{"-c", `cli_auth_credentials_store="file"`} }
 func (a *App) providerConfigured() bool {
@@ -109,15 +114,20 @@ func (a *App) accountAuthAPI(w http.ResponseWriter, r *http.Request, u identity)
 				}
 				a.authSession.mu.Unlock()
 			}
-			os.Remove(filepath.Join(a.codexHome(), ".selected"))
 			if in.Action == "logout" {
+				os.Remove(filepath.Join(a.codexHome(), ".selected"))
 				os.Remove(filepath.Join(a.codexHome(), "auth.json"))
 			}
-			a.mu.Lock()
-			a.state.Control.Quota = nil
-			a.persist()
-			a.mu.Unlock()
-			reply(w, 200, map[string]string{"state": "disconnected"})
+			state := "disconnected"
+			if a.chatGPTConnected() {
+				state = "connected"
+			} else {
+				a.mu.Lock()
+				a.state.Control.Quota = nil
+				a.persist()
+				a.mu.Unlock()
+			}
+			reply(w, 200, map[string]string{"state": state})
 			return
 		}
 		if in.Action != "start" {
@@ -142,32 +152,44 @@ func (a *App) accountAuthAPI(w http.ResponseWriter, r *http.Request, u identity)
 			fail(w, 500, "Не удалось подготовить вход")
 			return
 		}
-		// Any unfinished login is discarded; only an explicit successful login selects this profile.
-		os.Remove(filepath.Join(dir, "auth.json"))
-		os.Remove(filepath.Join(dir, ".selected"))
+		// A pending login owns a separate profile. Its timeout or cancellation must
+		// never remove credentials installed by another successful login.
+		loginDir, err := os.MkdirTemp(dir, ".login-")
+		if err != nil {
+			fail(w, 500, "Не удалось подготовить вход")
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		session := &AuthSession{state: "waiting", expires: now().Add(15 * time.Minute), cancel: cancel}
 		args := append([]string{"login", "--device-auth"}, a.authArguments()...)
 		cmd := exec.CommandContext(ctx, a.codex, args...)
-		cmd.Env = a.aiEnvironment()
+		cmd.Env = aiEnvironmentForHome(loginDir)
 		cmd.Stdout = session
 		cmd.Stderr = session
 		if cmd.Start() != nil {
 			cancel()
+			os.RemoveAll(loginDir)
 			fail(w, 500, "Не удалось начать вход в ChatGPT")
 			return
 		}
 		a.authSession = session
 		go func() {
+			defer os.RemoveAll(loginDir)
 			err := cmd.Wait()
 			a.authMu.Lock()
 			if err == nil && ctx.Err() == nil {
-				err = os.WriteFile(filepath.Join(dir, ".selected"), []byte("chatgpt"), 0600)
+				err = os.WriteFile(filepath.Join(loginDir, ".selected"), []byte("chatgpt"), 0600)
 			}
-			connected := err == nil && ctx.Err() == nil && a.chatGPTConnected()
-			if !connected {
-				os.Remove(filepath.Join(dir, ".selected"))
-				os.Remove(filepath.Join(dir, "auth.json"))
+			connected := err == nil && ctx.Err() == nil && chatGPTProfileConnected(loginDir)
+			if connected {
+				err = os.Chmod(filepath.Join(loginDir, "auth.json"), 0600)
+				if err == nil {
+					err = os.Rename(filepath.Join(loginDir, "auth.json"), filepath.Join(dir, "auth.json"))
+				}
+				if err == nil {
+					err = os.WriteFile(filepath.Join(dir, ".selected"), []byte("chatgpt"), 0600)
+				}
+				connected = err == nil && a.chatGPTConnected()
 			}
 			session.mu.Lock()
 			if connected {
