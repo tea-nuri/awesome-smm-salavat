@@ -101,7 +101,7 @@ func sourceDial(ctx context.Context, network, address string) (net.Conn, error) 
 }
 
 func websiteClient() *http.Client {
-	return &http.Client{Timeout: 55 * time.Second, Transport: &http.Transport{DialContext: sourceDial, ResponseHeaderTimeout: 12 * time.Second, TLSHandshakeTimeout: 8 * time.Second}, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &http.Client{Timeout: 55 * time.Second, Transport: &http.Transport{DisableCompression: true, DialContext: sourceDial, ResponseHeaderTimeout: 12 * time.Second, TLSHandshakeTimeout: 8 * time.Second}, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) > 4 {
 			return errors.New("Слишком много перенаправлений сайта")
 		}
@@ -240,6 +240,7 @@ func (a *App) sourceAPI(w http.ResponseWriter, r *http.Request, user identity, c
 		}
 		request, _ := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 		request.Header.Set("User-Agent", "ContentStudio/1.0 (company knowledge import)")
+		request.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain;q=0.8")
 		response, e := client.Do(request)
 		if e != nil && ctx.Err() == nil {
 			// A public GET is safe to retry after a transient connection failure.
